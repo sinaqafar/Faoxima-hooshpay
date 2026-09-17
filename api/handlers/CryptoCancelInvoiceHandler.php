@@ -71,6 +71,20 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
                     ? 'پرداخت در هوش‌پی انجام شده است؛ وضعیت فاکتور را بررسی کنید'
                     : 'هوش‌پی لغو فاکتور را تأیید نکرد؛ دوباره تلاش کنید');
             }
+            if (function_exists('hooshpayPersistInvoiceMetadata')) {
+                try {
+                    hooshpayPersistInvoiceMetadata($orderId, $cancel, false);
+                } catch (Throwable $e) {
+                    // The remote cancellation is authoritative; proceed with the
+                    // guarded local terminal update even if optional audit fields
+                    // could not be written at this instant.
+                    FaoximaLogger::userFacing('HooshPay cancel metadata persistence failed', [
+                        'user' => $this->user['id'],
+                        'order' => $orderId,
+                        'err' => $e->getMessage(),
+                    ]);
+                }
+            }
         }
 
         if ($method === 'atlaspay' && function_exists('atlaspayCancelOrder')) {
@@ -103,7 +117,15 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
             $stmt->bindValue(':o', $orderId, PDO::PARAM_STR);
             $stmt->bindValue(':u', (string)$this->user['id'], PDO::PARAM_STR);
             $stmt->execute();
+            if ($stmt->rowCount() !== 1) {
+                // Do not release a discount if a callback/poller finalized the
+                // invoice between the upstream cancellation and this update.
+                FaoximaResponse::fail(409, 'وضعیت فاکتور هم‌زمان تغییر کرده است؛ وضعیت را دوباره بررسی کنید');
+            }
             MiniDiscount::releaseLastUnpaidDiscount((string)$this->user['id']);
+            if (function_exists('rx_redis_del')) {
+                rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$this->user['id']);
+            }
         } catch (Throwable $e) {
             FaoximaLogger::exception($e, 'Crypto cancel-invoice update failed', [
                 'user'  => $this->user['id'],

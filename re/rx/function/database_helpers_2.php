@@ -3165,7 +3165,14 @@ function hooshpayPersistInvoiceMetadata($orderId, $response, $verified = false)
 
     foreach ($fields as $field => $value) {
         if ($value !== null && $value !== '') {
-            update('Payment_report', $field, $value, 'id_order', (string)$orderId);
+            // These fields are operational audit metadata. A transient write
+            // failure must not prevent the caller from applying an already
+            // verified provider result to the core payment state.
+            try {
+                update('Payment_report', $field, $value, 'id_order', (string)$orderId);
+            } catch (Throwable $e) {
+                error_log('[hooshpay] metadata update failed for ' . (string)$orderId . ' field=' . $field . ': ' . $e->getMessage());
+            }
         }
     }
 }

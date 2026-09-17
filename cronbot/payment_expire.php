@@ -63,7 +63,9 @@ if ($table_exists) {
     }
 }
 $month_date_time_start = date('Y/m/d H:i:s', time() - 1800);
-$stmt = $pdo->prepare("SELECT * FROM Payment_report WHERE time < :cutoff AND payment_Status = 'Unpaid' AND (crypto_currency IS NULL OR crypto_currency = '') ORDER BY id ASC LIMIT 120");
+// HooshPay invoices are never expired solely from local time: their dedicated
+// poller reconciles the upstream state and performs final verification first.
+$stmt = $pdo->prepare("SELECT * FROM Payment_report WHERE time < :cutoff AND payment_Status = 'Unpaid' AND (crypto_currency IS NULL OR crypto_currency = '') AND (Payment_Method IS NULL OR Payment_Method <> 'hooshpay') ORDER BY id ASC LIMIT 120");
 $stmt->execute([':cutoff' => $month_date_time_start]);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

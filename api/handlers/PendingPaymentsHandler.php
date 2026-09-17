@@ -138,7 +138,11 @@ final class PendingPaymentsHandler extends BaseHandler
                     $expiresAt = $remoteExpiry;
                 }
             }
-            if ($status !== 'expire' && $expiresAt < $now) {
+            // HooshPay's hosted-link expiry is only a UI deadline. Keep its row
+            // resumable until the dedicated status poller/return reconciliation
+            // records the provider's terminal state; otherwise a customer could
+            // be blocked by the pending guard without a visible payment card.
+            if ($status !== 'expire' && $expiresAt < $now && $methodLc !== 'hooshpay') {
                 continue;
             }
 

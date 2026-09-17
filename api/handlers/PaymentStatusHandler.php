@@ -240,6 +240,9 @@ final class PaymentStatusHandler extends BaseHandler
                         ':user'   => (string)$this->user['id'],
                     ]
                 );
+                if (function_exists('rx_redis_del')) {
+                    rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$this->user['id']);
+                }
             } elseif ($remoteStatus === 'failed') {
                 FaoximaDb::execute(
                     "UPDATE Payment_report
@@ -252,6 +255,9 @@ final class PaymentStatusHandler extends BaseHandler
                         ':user'   => (string)$this->user['id'],
                     ]
                 );
+                if (function_exists('rx_redis_del')) {
+                    rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$this->user['id']);
+                }
             }
         } catch (Throwable $e) {
             FaoximaLogger::userFacing('HooshPay return reconciliation failed', [

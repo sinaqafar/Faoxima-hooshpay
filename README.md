@@ -13,7 +13,6 @@
   <a href="https://mmd-amir.github.io/faoxima-docs/index.html"><img src="https://img.shields.io/badge/Documentation-Online_Docs-5a63ff?style=for-the-badge&logo=gitbook&logoColor=white" alt="Documentation"></a>
   <a href="https://t.me/faoxima"><img src="https://img.shields.io/badge/Telegram_Channel-@faoxima-229ED9?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Channel"></a>
   <a href="https://nowpayments.io/donation/faoximabot"><img src="https://img.shields.io/badge/Donate-NowPayments-00c08b?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Donate"></a>
-- 🌐 **HooshPay** (کارت‌به‌کارت با تأیید آنی)
 </p>
 
 <p align="center">
@@ -160,7 +159,6 @@
 
 <p align="center">
   👉 <strong>درگاه دونیت NowPayments (ارزهای دیجیتال):</strong><br>
-- 🌐 **HooshPay** (کارت‌به‌کارت با تأیید آنی)
   <a href="https://nowpayments.io/donation/faoximabot" target="_blank" rel="noopener">https://nowpayments.io/donation/faoximabot</a>
 </p>
 

@@ -48,69 +48,89 @@ foreach ($rows ?: [] as $report) {
         continue;
     }
 
+    // A malformed provider response, metadata write, or notification failure for
+    // one invoice must never prevent the remaining pending invoices from being
+    // reconciled in this run.
     try {
         $invoice = hooshpayGetInvoice($uid);
-    } catch (Throwable $e) {
-        error_log('[hooshpaycheck] status request exception for ' . $orderId . ': ' . $e->getMessage());
-        continue;
-    }
-    if (!is_array($invoice) || empty($invoice['success'])) {
-        continue;
-    }
-
-    $match = hooshpayInvoiceMatchesReport($report, $invoice);
-    if (empty($match['ok'])) {
-        error_log('[hooshpaycheck] invoice mismatch for ' . $orderId . ': ' . (string)($match['reason'] ?? 'unknown'));
-        continue;
-    }
-
-    hooshpayPersistInvoiceMetadata($orderId, $invoice, false);
-    $status = hooshpayInvoiceStatus($invoice);
-
-    if (in_array($status, ['expired', 'cancelled', 'canceled'], true)) {
-        $localStatus = in_array($status, ['cancelled', 'canceled'], true) ? 'cancelled' : 'expire';
-        try {
-            $update = $pdo->prepare(
-                "UPDATE Payment_report
-                    SET payment_Status = :status, hooshpay_status = :remote_status
-                  WHERE id_order = :order_id
-                    AND Payment_Method = 'hooshpay'
-                    AND payment_Status <> 'paid'"
-            );
-            $update->execute([':status' => $localStatus, ':remote_status' => $status, ':order_id' => $orderId]);
-        } catch (Throwable $e) {
-            error_log('[hooshpaycheck] unable to save terminal status for ' . $orderId . ': ' . $e->getMessage());
+        if (!is_array($invoice) || empty($invoice['success'])) {
+            continue;
         }
-        continue;
-    }
 
-    if ($status === 'failed') {
-        payment_notify_user_failed($orderId, 'پرداخت توسط هوش‌پی ناموفق شد');
-        continue;
-    }
+        $match = hooshpayInvoiceMatchesReport($report, $invoice);
+        if (empty($match['ok'])) {
+            error_log('[hooshpaycheck] invoice mismatch for ' . $orderId . ': ' . (string)($match['reason'] ?? 'unknown'));
+            continue;
+        }
 
-    if (!hooshpayInvoiceIsPaid($invoice)) {
-        continue;
-    }
+        hooshpayPersistInvoiceMetadata($orderId, $invoice, false);
+        $status = hooshpayInvoiceStatus($invoice);
 
-    try {
-        $verification = hooshpayVerifyPaidInvoiceForReport($report);
+        if (in_array($status, ['expired', 'cancelled', 'canceled'], true)) {
+            $localStatus = in_array($status, ['cancelled', 'canceled'], true) ? 'cancelled' : 'expire';
+            try {
+                $update = $pdo->prepare(
+                    "UPDATE Payment_report
+                        SET payment_Status = :status, hooshpay_status = :remote_status
+                      WHERE id_order = :order_id
+                        AND Payment_Method = 'hooshpay'
+                        AND payment_Status IN ('Unpaid', 'pending', 'waiting', 'expire')"
+                );
+                $update->execute([':status' => $localStatus, ':remote_status' => $status, ':order_id' => $orderId]);
+                if (function_exists('rx_redis_del') && isset($report['id_user'])) {
+                    rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$report['id_user']);
+                }
+            } catch (Throwable $e) {
+                error_log('[hooshpaycheck] unable to save terminal status for ' . $orderId . ': ' . $e->getMessage());
+            }
+            continue;
+        }
+
+        if ($status === 'failed') {
+            // Clear a short-lived status response even if sending the notification
+            // encounters a temporary Telegram/application error.
+            if (function_exists('rx_redis_del') && isset($report['id_user'])) {
+                rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$report['id_user']);
+            }
+            try {
+                payment_notify_user_failed($orderId, 'پرداخت توسط هوش‌پی ناموفق شد');
+            } catch (Throwable $e) {
+                error_log('[hooshpaycheck] failed-payment notification exception for ' . $orderId . ': ' . $e->getMessage());
+            }
+            continue;
+        }
+
+        if (!hooshpayInvoiceIsPaid($invoice)) {
+            continue;
+        }
+
+        try {
+            $verification = hooshpayVerifyPaidInvoiceForReport($report);
+        } catch (Throwable $e) {
+            error_log('[hooshpaycheck] verification exception for ' . $orderId . ': ' . $e->getMessage());
+            continue;
+        }
+        if (empty($verification['ok'])) {
+            error_log('[hooshpaycheck] verification failed for ' . $orderId . ': ' . (string)($verification['reason'] ?? 'unknown'));
+            continue;
+        }
+
+        $data = hooshpayInvoiceData($verification['response'] ?? []);
+        try {
+            payment_confirm_paid($orderId, 'chashbackhooshpay', [
+                'method'      => 'hooshpay',
+                'thread_id'   => $ctx['paymentreports'] ?? null,
+                'extra_lines' => array_filter([
+                    !empty($data['tracking_code']) ? ('🔖 کد پیگیری هوش‌پی: ' . (string)$data['tracking_code']) : '',
+                    '🔁 تأیید خودکار از طریق پولر و verify هوش‌پی',
+                ]),
+            ]);
+        } catch (Throwable $e) {
+            // One application-side fulfillment error must not stop polling unrelated
+            // HooshPay invoices in this cron run.
+            error_log('[hooshpaycheck] fulfillment exception for ' . $orderId . ': ' . $e->getMessage());
+        }
     } catch (Throwable $e) {
-        error_log('[hooshpaycheck] verification exception for ' . $orderId . ': ' . $e->getMessage());
-        continue;
+        error_log('[hooshpaycheck] invoice processing exception for ' . $orderId . ': ' . $e->getMessage());
     }
-    if (empty($verification['ok'])) {
-        error_log('[hooshpaycheck] verification failed for ' . $orderId . ': ' . (string)($verification['reason'] ?? 'unknown'));
-        continue;
-    }
-
-    $data = hooshpayInvoiceData($verification['response'] ?? []);
-    payment_confirm_paid($orderId, 'chashbackhooshpay', [
-        'method'      => 'hooshpay',
-        'thread_id'   => $ctx['paymentreports'] ?? null,
-        'extra_lines' => array_filter([
-            !empty($data['tracking_code']) ? ('🔖 کد پیگیری هوش‌پی: ' . (string)$data['tracking_code']) : '',
-            '🔁 تأیید خودکار از طریق پولر و verify هوش‌پی',
-        ]),
-    ]);
 }

@@ -55,6 +55,11 @@ if (!function_exists('payment_confirm_paid')) {
         if ($atomic->rowCount() < 1) {
             return ['ok' => false, 'reason' => 'already paid or missing'];
         }
+        // The conditional write used raw PDO, so invalidate select()/Redis
+        // snapshots before DirectPayment reloads this report in the same request.
+        if (function_exists('clearSelectCache')) {
+            clearSelectCache('Payment_report');
+        }
 
         $report = select('Payment_report', '*', 'id_order', $orderId, 'select');
         if (!is_array($report)) {
@@ -170,12 +175,33 @@ if (!function_exists('payment_notify_user_failed')) {
 
     function payment_notify_user_failed(string $orderId, string $reason = ''): bool
     {
+        global $pdo;
+
+        // Make the terminal transition conditional. A delayed failed-status poll
+        // must never overwrite an invoice a concurrent callback has just paid.
+        if (!($pdo instanceof PDO)) return false;
+        try {
+            $transition = $pdo->prepare(
+                "UPDATE Payment_report
+                    SET payment_Status = 'reject'
+                  WHERE id_order = :order_id
+                    AND payment_Status NOT IN ('paid', 'cancelled', 'reject', 'expire')"
+            );
+            $transition->execute([':order_id' => $orderId]);
+            if ($transition->rowCount() !== 1) return false;
+            if (function_exists('clearSelectCache')) {
+                clearSelectCache('Payment_report');
+            }
+        } catch (Throwable $e) {
+            error_log('[payment_confirm] unable to mark failed payment ' . $orderId . ': ' . $e->getMessage());
+            return false;
+        }
+
         $report = select('Payment_report', '*', 'id_order', $orderId, 'select');
         if (!is_array($report)) return false;
-        $status = strtolower((string)($report['payment_Status'] ?? ''));
-        if ($status === 'paid') return false;
-
-        update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+        if (function_exists('rx_redis_del') && isset($report['id_user'])) {
+            rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$report['id_user']);
+        }
 
         if (!function_exists('telegram')) return true;
 
@@ -204,12 +230,30 @@ if (!function_exists('payment_mark_expired')) {
 
     function payment_mark_expired(string $orderId, ?string $textExpire = null): bool
     {
+        global $pdo;
+
+        // Expiry is also a conditional terminal transition: never replace a paid,
+        // rejected, or user-cancelled result because a poll arrived late.
+        if (!($pdo instanceof PDO)) return false;
+        try {
+            $transition = $pdo->prepare(
+                "UPDATE Payment_report
+                    SET payment_Status = 'expire'
+                  WHERE id_order = :order_id
+                    AND payment_Status IN ('Unpaid', 'pending', 'waiting', 'AwaitingHash')"
+            );
+            $transition->execute([':order_id' => $orderId]);
+            if ($transition->rowCount() !== 1) return false;
+            if (function_exists('clearSelectCache')) {
+                clearSelectCache('Payment_report');
+            }
+        } catch (Throwable $e) {
+            error_log('[payment_confirm] unable to mark expired payment ' . $orderId . ': ' . $e->getMessage());
+            return false;
+        }
+
         $report = select('Payment_report', '*', 'id_order', $orderId, 'select');
         if (!is_array($report)) return false;
-        $status = strtolower((string)($report['payment_Status'] ?? ''));
-        if ($status === 'paid') return false;
-
-        update('Payment_report', 'payment_Status', 'expire', 'id_order', $orderId);
         if (function_exists('rx_redis_del') && isset($report['id_user'])) {
             rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$report['id_user']);
         }
