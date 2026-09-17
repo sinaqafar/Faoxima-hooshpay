@@ -2814,3 +2814,25 @@ $textonebuy
         }
     }
 }
+
+/** HooshPay card-to-card gateway integration. Amounts are in toman. */
+function hooshpayCreateInvoice($orderId, $amount) {
+    $key = trim((string)(select('PaySetting','ValuePay','NamePay','apihooshpay','select')['ValuePay'] ?? ''));
+    if ($key === '') return ['success'=>false, 'error'=>'کلید API هوش‌پی تنظیم نشده است'];
+    $callback = rtrim((string)($GLOBALS['hooshpay_callback_url'] ?? ''), '/');
+    $payload = json_encode(['amount'=>(int)$amount, 'fee_mode'=>'seller', 'order_id'=>(string)$orderId, 'description'=>'شارژ حساب فاکسیما', 'callback_url'=>$callback], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    $ch = curl_init('https://hooshpay.xyz/api/v1/invoices');
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER=>true, CURLOPT_POST=>true, CURLOPT_TIMEOUT=>20,
+        CURLOPT_HTTPHEADER=>['X-API-KEY: '.$key, 'Content-Type: application/json'], CURLOPT_POSTFIELDS=>$payload]);
+    $raw = curl_exec($ch); $err = curl_error($ch); curl_close($ch);
+    $out = json_decode((string)$raw, true);
+    if (!is_array($out) || empty($out['success'])) return ['success'=>false,'error'=>$err ?: 'پاسخ نامعتبر از هوش‌پی','raw'=>$out];
+    return $out;
+}
+function hooshpayGetInvoice($uid) {
+    $key = trim((string)(select('PaySetting','ValuePay','NamePay','apihooshpay','select')['ValuePay'] ?? ''));
+    if ($key === '') return null;
+    $ch=curl_init('https://hooshpay.xyz/api/v1/invoices/'.rawurlencode($uid));
+    curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>15,CURLOPT_HTTPHEADER=>['X-API-KEY: '.$key]]);
+    $out=json_decode((string)curl_exec($ch),true); curl_close($ch); return $out;
+}

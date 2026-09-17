@@ -219,6 +219,7 @@ function buildPaymentGatewayKeyboard(array $textbotlang)
     $blupal_status_raw = getPaySettingValue('statusblupal', 'offblupal');
     $atlaspay_status_raw = getPaySettingValue('statusatlaspay', 'offatlaspay');
     $tetrapay_status_raw = getPaySettingValue('statustetrapay', 'offtetrapay');
+    $hooshpay_status_raw = getPaySettingValue('statushooshpay', 'offhooshpay');
     $zarinpal = getPaySettingValue('zarinpalstatus', 'offzarinpal');
     $affilnecurrency = getPaySettingValue('digistatus', 'offdigi');
     $paymentsstartelegram = getPaySettingValue('statusstar', '0');
@@ -234,6 +235,7 @@ function buildPaymentGatewayKeyboard(array $textbotlang)
     $blupalstatus = $blupal_status_raw === 'onblupal' ? $statusOn : $statusOff;
     $atlaspaystatus = $atlaspay_status_raw === 'onatlaspay' ? $statusOn : $statusOff;
     $tetrapaystatus = $tetrapay_status_raw === 'ontetrapay' ? $statusOn : $statusOff;
+    $hooshpaystatus = $hooshpay_status_raw === 'onhooshpay' ? $statusOn : $statusOff;
     $zarinpalstatus = $zarinpal === 'onzarinpal' ? $statusOn : $statusOff;
     $affilnecurrencystatus = $affilnecurrency === 'ondigi' ? $statusOn : $statusOff;
     $paymentstar = (string)$paymentsstartelegram === '1' ? $statusOn : $statusOff;
@@ -284,6 +286,11 @@ function buildPaymentGatewayKeyboard(array $textbotlang)
             ['text' => '⚙️ تنظیمات', 'callback_data' => 'atlaspaysetting'],
             ['text' => $atlaspaystatus, 'callback_data' => "editpayment-atlaspay-$atlaspay_status_raw"],
             ['text' => '🌐 اطلس‌پی', 'callback_data' => 'atlaspay'],
+        ],
+        [
+            ['text' => '⚙️ تنظیمات', 'callback_data' => 'hooshpaysetting'],
+            ['text' => $hooshpaystatus, 'callback_data' => "editpayment-hooshpay-$hooshpay_status_raw"],
+            ['text' => '🌐 هوش‌پی', 'callback_data' => 'hooshpay'],
         ],
         [
             ['text' => '⚙️ تنظیمات', 'callback_data' => 'tetrapaysetting'],

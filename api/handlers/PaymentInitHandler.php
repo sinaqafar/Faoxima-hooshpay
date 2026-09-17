@@ -187,6 +187,10 @@ final class PaymentInitHandler extends BaseHandler
                     $this->handleBluPal($amount);
                     return;
 
+                case 'hooshpay':
+                    $this->handleHooshPay($amount);
+                    return;
+
                 case 'atlaspay':
                     $this->handleAtlasPay($amount);
                     return;
@@ -407,6 +411,7 @@ final class PaymentInitHandler extends BaseHandler
             'blupal'        => ['minbalanceblupal',        'maxbalanceblupal'],
             'atlaspay'      => ['minbalanceatlaspay',      'maxbalanceatlaspay'],
             'tetrapay'      => ['minbalancetetrapay',      'maxbalancetetrapay'],
+            'hooshpay'      => ['minbalancehooshpay',      'maxbalancehooshpay'],
         ];
 
         $minMethod = 0;
@@ -718,6 +723,33 @@ final class PaymentInitHandler extends BaseHandler
             'order_id' => $orderId,
             'message'  => faoxima_textbot_get('dyn_paymentinit_click_link_to_pay', '🌸 برای تکمیل پرداخت روی لینک زیر کلیک کنید.'),
         ]);
+    }
+
+
+    private function handleHooshPay(int $amount): void
+    {
+        if (!function_exists('hooshpayCreateInvoice')) {
+            FaoximaResponse::fail(503, '❌ تابع درگاه هوش‌پی روی این سرور موجود نیست.');
+        }
+        $orderId = bin2hex(random_bytes(5));
+        $this->insertPaymentReport('hooshpay', $amount, $orderId);
+        $configuredCallback = trim((string)($get('hooshpay_callback_url') ?? ''));
+        $GLOBALS['hooshpay_callback_url'] = $configuredCallback !== '' ? $configuredCallback : ((isset($_SERVER['HTTP_HOST']) ? ((isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST']) : '') . '/hooshpay_callback.php');
+        try { $pay = hooshpayCreateInvoice($orderId, $amount); } catch (Throwable $e) {
+            update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+            FaoximaResponse::fail(502, '❌ خطا در ارتباط با درگاه هوش‌پی.');
+        }
+        $uid = is_array($pay) ? trim((string)($pay['data']['uid'] ?? '')) : '';
+        $url = is_array($pay) ? trim((string)($pay['data']['payment_url'] ?? '')) : '';
+        if ($uid === '' || $url === '') {
+            update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+            FaoximaResponse::fail(502, '❌ ساخت لینک پرداخت هوش‌پی ناموفق بود.');
+        }
+        update('Payment_report', 'hooshpay_uid', $uid, 'id_order', $orderId);
+        update('Payment_report', 'hooshpay_payment_url', $url, 'id_order', $orderId);
+        $payable = (int)($pay['data']['payable_amount'] ?? $amount);
+        update('Payment_report', 'price', $payable, 'id_order', $orderId);
+        FaoximaResponse::ok(['kind'=>'url', 'url'=>$url, 'order_id'=>$orderId, 'message'=>'🌐 برای پرداخت روی لینک زیر کلیک کنید.']);
     }
 
 

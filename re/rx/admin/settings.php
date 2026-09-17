@@ -795,6 +795,32 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     nm_adminInstantReply($from_id, $textbotlang['Admin']['SettingnowPayment']['Savaapi'], $tonpay, 'HTML');
     update("PaySetting", "ValuePay", $text, "NamePay", "apitonpay");
     step('home', $from_id);
+} elseif ($datain == "hooshpaysetting" && $adminrulecheck['rule'] == "administrator") {
+    $hooshpay = json_encode(['inline_keyboard'=>[
+        [['text'=>'🔑 ثبت API Key هوش‌پی','callback_data'=>'hooshpay_apikey']],
+        [['text'=>'🔐 ثبت Secret هوش‌پی','callback_data'=>'hooshpay_secret']],
+        [['text'=>$textbotlang['Admin']['backadmin'],'callback_data'=>'hooshpay_back']]
+    ]], JSON_UNESCAPED_UNICODE);
+    Editmessagetext($from_id, $message_id, '⚙️ تنظیمات درگاه هوش‌پی', $hooshpay);
+} elseif ($text == "🔑 ثبت API Key هوش‌پی" && $adminrulecheck['rule'] == "administrator") {
+    $row = select("PaySetting", "ValuePay", "NamePay", "apihooshpay", "select");
+    nm_adminInstantReply($from_id, "🔑 کلید API هوش‌پی را وارد کنید.
+
+مقدار فعلی: " . (($row['ValuePay'] ?? '') ?: 'ثبت نشده'), $backadmin, 'HTML');
+    step('apihooshpay', $from_id);
+} elseif ($datain == "hooshpay_apikey" || $text == "🔑 ثبت API Key هوش‌پی") {
+    nm_adminInstantReply($from_id, '🔑 کلید API هوش‌پی را وارد کنید.', $backadmin, 'HTML'); step('apihooshpay', $from_id);
+} elseif ($user['step'] == "apihooshpay") {
+    update("PaySetting", "ValuePay", trim($text), "NamePay", "apihooshpay");
+    nm_adminInstantReply($from_id, "✅ کلید API هوش‌پی ذخیره شد.", $backadmin, 'HTML');
+    step('home', $from_id);
+} elseif ($datain == "hooshpay_secret" || $text == "🔐 ثبت Secret هوش‌پی" && $adminrulecheck['rule'] == "administrator") {
+    nm_adminInstantReply($from_id, "🔐 Secret هوش‌پی را برای اعتبارسنجی کال‌بک وارد کنید.", $backadmin, 'HTML');
+    step('secrethooshpay', $from_id);
+} elseif ($user['step'] == "secrethooshpay") {
+    update("PaySetting", "ValuePay", trim($text), "NamePay", "secrethooshpay");
+    nm_adminInstantReply($from_id, "✅ Secret هوش‌پی ذخیره شد.", $backadmin, 'HTML');
+    step('home', $from_id);
 } elseif ($text == "🔑 ثبت API Key اطلس‌پی" && $adminrulecheck['rule'] == "administrator") {
     $PaySetting = select("PaySetting", "ValuePay", "NamePay", "apiatlaspay", "select");
     $currentKey = $PaySetting['ValuePay'] ?? 'ثبت نشده';
@@ -1994,6 +2020,9 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
             $valuenew = "onatlaspay";
         }
         update("PaySetting", "ValuePay", $valuenew, "NamePay", "statusatlaspay");
+    } elseif ($type == "hooshpay") {
+        $valuenew = ($value == "onhooshpay") ? "offhooshpay" : "onhooshpay";
+        update("PaySetting", "ValuePay", $valuenew, "NamePay", "statushooshpay");
     } elseif ($type == "tetrapay") {
         if ($value == "ontetrapay") {
             $valuenew = "offtetrapay";

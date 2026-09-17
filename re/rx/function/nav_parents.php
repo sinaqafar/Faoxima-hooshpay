@@ -41,6 +41,7 @@ if (!function_exists('rxNavParent')) {
                 'gw_cubepay'                => 'finance',
                 'gw_blupal'                 => 'finance',
                 'gw_atlaspay'               => 'finance',
+                'gw_hooshpay'               => 'finance',
                 'gw_tetrapay'               => 'finance',
                 'gw_zarinpal'               => 'finance',
                 'gw_plisio'                 => 'finance',
@@ -144,6 +145,8 @@ if (!function_exists('rxNavParent')) {
                 'helpblupal'                => 'gw_blupal',
                 'gettextblupal'             => 'gw_blupal',
                 'apiatlaspay'               => 'gw_atlaspay',
+                'apihooshpay'               => 'gw_hooshpay',
+                'secrethooshpay'           => 'gw_hooshpay',
                 'getcashatlaspay'           => 'gw_atlaspay',
                 'getmainatlaspay'           => 'gw_atlaspay',
                 'getmaxatlaspay'            => 'gw_atlaspay',
@@ -465,7 +468,7 @@ if (!function_exists('rxIsRenderableState')) {
                 'featcat_lottery', 'featcat_antispam', 'featcat_redis',
                 'featnav_affiliates', 'affiliates_antifraud_menu', 'featnav_changeloc',
                 'gw_cart', 'gw_cart_auto', 'gw_trnado', 'gw_tonpay', 'gw_cubepay', 'gw_blupal',
-                'gw_atlaspay', 'gw_tetrapay',
+                'gw_atlaspay', 'gw_tetrapay', 'gw_hooshpay',
                 'gw_zarinpal', 'gw_plisio', 'gw_iranpay', 'gw_tron', 'gw_star', 'gw_nowpayment',
             ]);
         }
