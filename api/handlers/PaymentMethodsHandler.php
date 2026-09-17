@@ -185,7 +185,11 @@ final class PaymentMethodsHandler extends BaseHandler
                 'kind'  => 'form',
             ];
         }
-        if ($hooshpayActive === 'onhooshpay') {
+        $hooshpayConfigured = trim($get('apihooshpay')) !== ''
+            && trim($get('secrethooshpay')) !== ''
+            && function_exists('hooshpayCallbackUrl')
+            && hooshpayCallbackUrl() !== '';
+        if ($hooshpayActive === 'onhooshpay' && $hooshpayConfigured) {
             $methods[] = ['id'=>'hooshpay', 'label'=>$L('hooshpay', '🌐 هوش‌پی'), 'icon'=>'🌐', 'kind'=>'form'];
         }
         if ($zarinpal === 'onzarinpal') {

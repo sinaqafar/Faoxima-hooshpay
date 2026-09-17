@@ -2815,24 +2815,389 @@ $textonebuy
     }
 }
 
-/** HooshPay card-to-card gateway integration. Amounts are in toman. */
-function hooshpayCreateInvoice($orderId, $amount) {
-    $key = trim((string)(select('PaySetting','ValuePay','NamePay','apihooshpay','select')['ValuePay'] ?? ''));
-    if ($key === '') return ['success'=>false, 'error'=>'کلید API هوش‌پی تنظیم نشده است'];
-    $callback = rtrim((string)($GLOBALS['hooshpay_callback_url'] ?? ''), '/');
-    $payload = json_encode(['amount'=>(int)$amount, 'fee_mode'=>'seller', 'order_id'=>(string)$orderId, 'description'=>'شارژ حساب فاکسیما', 'callback_url'=>$callback], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-    $ch = curl_init('https://hooshpay.xyz/api/v1/invoices');
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER=>true, CURLOPT_POST=>true, CURLOPT_TIMEOUT=>20,
-        CURLOPT_HTTPHEADER=>['X-API-KEY: '.$key, 'Content-Type: application/json'], CURLOPT_POSTFIELDS=>$payload]);
-    $raw = curl_exec($ch); $err = curl_error($ch); curl_close($ch);
-    $out = json_decode((string)$raw, true);
-    if (!is_array($out) || empty($out['success'])) return ['success'=>false,'error'=>$err ?: 'پاسخ نامعتبر از هوش‌پی','raw'=>$out];
-    return $out;
+/**
+ * HooshPay card-to-card gateway integration. All monetary values are toman.
+ *
+ * API credentials and URLs are deliberately read on the server only. Do not expose
+ * apihooshpay or secrethooshpay to the Mini App or to client-side JavaScript.
+ */
+if (!defined('HOOSHPAY_API_BASE')) {
+    define('HOOSHPAY_API_BASE', 'https://hooshpay.xyz/api/v1');
 }
-function hooshpayGetInvoice($uid) {
-    $key = trim((string)(select('PaySetting','ValuePay','NamePay','apihooshpay','select')['ValuePay'] ?? ''));
-    if ($key === '') return null;
-    $ch=curl_init('https://hooshpay.xyz/api/v1/invoices/'.rawurlencode($uid));
-    curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>15,CURLOPT_HTTPHEADER=>['X-API-KEY: '.$key]]);
-    $out=json_decode((string)curl_exec($ch),true); curl_close($ch); return $out;
+
+function hooshpayPaySetting($name, $default = '')
+{
+    $row = select('PaySetting', 'ValuePay', 'NamePay', (string)$name, 'select');
+    return is_array($row) ? (string)($row['ValuePay'] ?? $default) : (string)$default;
+}
+
+function hooshpayApiKey()
+{
+    return trim(hooshpayPaySetting('apihooshpay'));
+}
+
+function hooshpaySecret()
+{
+    return trim(hooshpayPaySetting('secrethooshpay'));
+}
+
+function hooshpayFeeMode($value = null)
+{
+    $mode = strtolower(trim((string)($value === null ? hooshpayPaySetting('hooshpay_fee_mode', 'seller') : $value)));
+    return in_array($mode, ['seller', 'buyer', 'split'], true) ? $mode : 'seller';
+}
+
+function hooshpayIsHttpsUrl($url)
+{
+    $url = trim((string)$url);
+    if ($url === '' || filter_var($url, FILTER_VALIDATE_URL) === false) {
+        return false;
+    }
+    $parts = parse_url($url);
+    return is_array($parts)
+        && strtolower((string)($parts['scheme'] ?? '')) === 'https'
+        && trim((string)($parts['host'] ?? '')) !== '';
+}
+
+/** Resolve a trusted callback URL; never derive it from an untrusted Host header. */
+function hooshpayCallbackUrl()
+{
+    $configured = trim(hooshpayPaySetting('hooshpay_callback_url'));
+    if ($configured !== '') {
+        return hooshpayIsHttpsUrl($configured) ? $configured : '';
+    }
+
+    global $domainhosts;
+    $host = rtrim(preg_replace('#^https?://#i', '', trim((string)($domainhosts ?? ''))), '/');
+    if ($host === '') {
+        return '';
+    }
+    $url = 'https://' . $host . '/hooshpay_callback.php';
+    return hooshpayIsHttpsUrl($url) ? $url : '';
+}
+
+/**
+ * A custom return URL may contain {order_id}. Otherwise the configured URL is sent
+ * unchanged. The default returns a Mini App user to the matching payment watcher.
+ */
+function hooshpayReturnUrl($orderId)
+{
+    $configured = trim(hooshpayPaySetting('hooshpay_return_url'));
+    if ($configured !== '') {
+        $returnUrl = str_replace('{order_id}', rawurlencode((string)$orderId), $configured);
+        return hooshpayIsHttpsUrl($returnUrl) ? $returnUrl : '';
+    }
+
+    global $domainhosts;
+    $host = rtrim(preg_replace('#^https?://#i', '', trim((string)($domainhosts ?? ''))), '/');
+    if ($host === '') {
+        return '';
+    }
+    $url = 'https://' . $host . '/app/#/watch/' . rawurlencode((string)$orderId);
+    return hooshpayIsHttpsUrl($url) ? $url : '';
+}
+
+/** Make an authenticated server-to-server request to HooshPay. */
+function hooshpayRequest($method, $path, array $payload = [])
+{
+    if (!function_exists('curl_init')) {
+        return ['success' => false, 'error' => 'افزونه cURL روی سرور فعال نیست'];
+    }
+
+    $key = hooshpayApiKey();
+    if ($key === '') {
+        return ['success' => false, 'error' => 'کلید API هوش‌پی تنظیم نشده است'];
+    }
+
+    $method = strtoupper(trim((string)$method));
+    if (!in_array($method, ['GET', 'POST'], true)) {
+        return ['success' => false, 'error' => 'متد درخواست هوش‌پی نامعتبر است'];
+    }
+
+    $body = '';
+    if ($method === 'POST') {
+        $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($body === false) {
+            return ['success' => false, 'error' => 'ساخت دادهٔ درخواست هوش‌پی ناموفق بود'];
+        }
+    }
+
+    $endpoint = rtrim(HOOSHPAY_API_BASE, '/') . '/' . ltrim((string)$path, '/');
+    $curl = curl_init($endpoint);
+    if ($curl === false) {
+        return ['success' => false, 'error' => 'شروع ارتباط با هوش‌پی ناموفق بود'];
+    }
+
+    $options = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT        => 25,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_HTTPHEADER     => [
+            'Accept: application/json',
+            'X-API-KEY: ' . $key,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_CUSTOMREQUEST  => $method,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ];
+    if ($method === 'POST') {
+        $options[CURLOPT_POSTFIELDS] = $body;
+    }
+    curl_setopt_array($curl, $options);
+
+    $raw = curl_exec($curl);
+    $curlError = curl_error($curl);
+    $httpCode = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    if ($raw === false) {
+        return ['success' => false, 'error' => 'خطای ارتباط با هوش‌پی: ' . ($curlError !== '' ? $curlError : 'نامشخص')];
+    }
+
+    $decoded = json_decode((string)$raw, true);
+    if (!is_array($decoded)) {
+        return ['success' => false, 'error' => 'پاسخ نامعتبر از هوش‌پی', 'http_status' => $httpCode];
+    }
+    $decoded['http_status'] = $httpCode;
+
+    if ($httpCode < 200 || $httpCode >= 300) {
+        $decoded['success'] = false;
+        if (empty($decoded['error'])) {
+            $decoded['error'] = (string)($decoded['message'] ?? ('خطای هوش‌پی با کد ' . $httpCode));
+        }
+    }
+    return $decoded;
+}
+
+function hooshpayCreateInvoice($orderId, $amount, array $options = [])
+{
+    $amount = (int)$amount;
+    if ($amount < 1000) {
+        return ['success' => false, 'error' => 'حداقل مبلغ هوش‌پی ۱٬۰۰۰ تومان است'];
+    }
+
+    $callbackUrl = trim((string)($options['callback_url'] ?? hooshpayCallbackUrl()));
+    if (!hooshpayIsHttpsUrl($callbackUrl)) {
+        return ['success' => false, 'error' => 'آدرس HTTPS کال‌بک هوش‌پی تنظیم نشده یا نامعتبر است'];
+    }
+
+    $requestPayload = [
+        'amount'       => $amount,
+        'fee_mode'     => hooshpayFeeMode($options['fee_mode'] ?? null),
+        'order_id'     => (string)$orderId,
+        'description'  => trim((string)($options['description'] ?? 'شارژ حساب فاکسیما')),
+        'callback_url' => $callbackUrl,
+    ];
+    $configuredReturn = trim(hooshpayPaySetting('hooshpay_return_url'));
+    $returnUrl = trim((string)($options['return_url'] ?? hooshpayReturnUrl($orderId)));
+    if ($configuredReturn !== '' && $returnUrl === '') {
+        return ['success' => false, 'error' => 'آدرس HTTPS بازگشت هوش‌پی نامعتبر است'];
+    }
+    if ($returnUrl !== '') {
+        if (!hooshpayIsHttpsUrl($returnUrl)) {
+            return ['success' => false, 'error' => 'آدرس HTTPS بازگشت هوش‌پی نامعتبر است'];
+        }
+        $requestPayload['return_url'] = $returnUrl;
+    }
+
+    $response = hooshpayRequest('POST', 'invoices', $requestPayload);
+    if (empty($response['success'])) {
+        $response['error'] = (string)($response['error'] ?? $response['message'] ?? 'ساخت فاکتور هوش‌پی ناموفق بود');
+    }
+    return $response;
+}
+
+function hooshpayGetInvoice($uid)
+{
+    $uid = trim((string)$uid);
+    if ($uid === '') {
+        return ['success' => false, 'error' => 'شناسه فاکتور هوش‌پی خالی است'];
+    }
+    return hooshpayRequest('GET', 'invoices/' . rawurlencode($uid));
+}
+
+function hooshpayVerifyInvoice($uid)
+{
+    $uid = trim((string)$uid);
+    if ($uid === '') {
+        return ['success' => false, 'error' => 'شناسه فاکتور هوش‌پی خالی است'];
+    }
+    return hooshpayRequest('POST', 'invoices/' . rawurlencode($uid) . '/verify');
+}
+
+function hooshpayCancelInvoice($uid)
+{
+    $uid = trim((string)$uid);
+    if ($uid === '') {
+        return ['success' => false, 'error' => 'شناسه فاکتور هوش‌پی خالی است'];
+    }
+    return hooshpayRequest('POST', 'invoices/' . rawurlencode($uid) . '/cancel');
+}
+
+function hooshpayBalance()
+{
+    return hooshpayRequest('GET', 'balance');
+}
+
+function hooshpayAccount()
+{
+    return hooshpayRequest('GET', 'account');
+}
+
+/** Return invoice data regardless of whether HooshPay wraps it in `data`. */
+function hooshpayInvoiceData($response)
+{
+    if (!is_array($response)) {
+        return [];
+    }
+    return isset($response['data']) && is_array($response['data']) ? $response['data'] : $response;
+}
+
+function hooshpayInvoiceStatus($response)
+{
+    $data = hooshpayInvoiceData($response);
+    // API envelopes can have their own status; the invoice status belongs to data.
+    return strtolower(trim((string)($data['status'] ?? $response['status'] ?? '')));
+}
+
+function hooshpayInvoiceIsPaid($response)
+{
+    $data = hooshpayInvoiceData($response);
+    return (($response['paid'] ?? $data['paid'] ?? false) === true)
+        || hooshpayInvoiceStatus($response) === 'paid';
+}
+
+/**
+ * Canonical JSON required by HooshPay's HMAC specification.
+ * The documented PHP implementation applies ksort() to the callback object; do
+ * exactly that (rather than reordering values nested inside a future payload).
+ */
+function hooshpayCanonicalizePayload($value)
+{
+    if (!is_array($value)) {
+        return $value;
+    }
+    $keys = array_keys($value);
+    if ($keys !== range(0, count($keys) - 1)) {
+        ksort($value, SORT_STRING);
+    }
+    return $value;
+}
+
+function hooshpayCallbackSignatureIsValid(array $payload, $signature)
+{
+    $secret = hooshpaySecret();
+    $signature = trim((string)$signature);
+    if ($secret === '' || $signature === '') {
+        return false;
+    }
+
+    $canonical = hooshpayCanonicalizePayload($payload);
+    $body = json_encode($canonical, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($body === false) {
+        return false;
+    }
+    return hash_equals(hash_hmac('sha256', $body, $secret), $signature);
+}
+
+/**
+ * Match the data signed/returned by HooshPay to the locally created invoice before
+ * any wallet or service fulfillment action runs.
+ */
+function hooshpayInvoiceMatchesReport(array $report, $response)
+{
+    $data = hooshpayInvoiceData($response);
+    $expectedUid = trim((string)($report['hooshpay_uid'] ?? ''));
+    $actualUid = trim((string)($data['uid'] ?? $data['invoice'] ?? ''));
+    if ($expectedUid === '' || ($actualUid !== '' && !hash_equals($expectedUid, $actualUid))) {
+        return ['ok' => false, 'reason' => 'شناسه فاکتور هوش‌پی با سفارش مطابقت ندارد'];
+    }
+
+    $expectedOrder = trim((string)($report['id_order'] ?? ''));
+    $actualOrder = trim((string)($data['order_id'] ?? ''));
+    if ($expectedOrder === '' || ($actualOrder !== '' && !hash_equals($expectedOrder, $actualOrder))) {
+        return ['ok' => false, 'reason' => 'شناسه سفارش هوش‌پی با سفارش مطابقت ندارد'];
+    }
+
+    $expectedAmount = (int)($report['hooshpay_amount'] ?? $report['price'] ?? 0);
+    if ($expectedAmount <= 0) {
+        return ['ok' => false, 'reason' => 'مبلغ محلی فاکتور هوش‌پی نامعتبر است'];
+    }
+    if (isset($data['amount']) && is_numeric($data['amount']) && (int)$data['amount'] !== $expectedAmount) {
+        return ['ok' => false, 'reason' => 'مبلغ فاکتور هوش‌پی با سفارش مطابقت ندارد'];
+    }
+
+    $expectedPayable = (int)($report['hooshpay_payable_amount'] ?? 0);
+    if ($expectedPayable > 0 && isset($data['payable_amount']) && is_numeric($data['payable_amount'])
+        && (int)$data['payable_amount'] !== $expectedPayable) {
+        return ['ok' => false, 'reason' => 'مبلغ قابل پرداخت هوش‌پی با سفارش مطابقت ندارد'];
+    }
+
+    $expectedFeeMode = trim((string)($report['hooshpay_fee_mode'] ?? ''));
+    $actualFeeMode = trim((string)($data['fee_mode'] ?? ''));
+    if ($expectedFeeMode !== '' && $actualFeeMode !== ''
+        && !hash_equals(hooshpayFeeMode($expectedFeeMode), hooshpayFeeMode($actualFeeMode))) {
+        return ['ok' => false, 'reason' => 'روش کارمزد هوش‌پی با سفارش مطابقت ندارد'];
+    }
+
+    return ['ok' => true];
+}
+
+/** Persist non-sensitive invoice metadata returned by HooshPay for audit/support. */
+function hooshpayPersistInvoiceMetadata($orderId, $response, $verified = false)
+{
+    $data = hooshpayInvoiceData($response);
+    $status = hooshpayInvoiceStatus($response);
+    $fields = [
+        'hooshpay_status'           => $status !== '' ? $status : null,
+        'hooshpay_payable_amount'   => isset($data['payable_amount']) && is_numeric($data['payable_amount']) ? (int)$data['payable_amount'] : null,
+        'hooshpay_merchant_credit'  => isset($data['merchant_credit']) && is_numeric($data['merchant_credit']) ? (int)$data['merchant_credit'] : null,
+        'hooshpay_fee_amount'       => isset($data['fee_amount']) && is_numeric($data['fee_amount']) ? (int)$data['fee_amount'] : null,
+        'hooshpay_fee_mode'         => isset($data['fee_mode']) ? hooshpayFeeMode($data['fee_mode']) : null,
+        'hooshpay_tracking_code'    => isset($data['tracking_code']) ? trim((string)$data['tracking_code']) : null,
+        'hooshpay_expires_at'       => isset($data['expires_at']) ? trim((string)$data['expires_at']) : null,
+    ];
+    if ($verified) {
+        $fields['hooshpay_verified_at'] = date('c');
+    }
+
+    foreach ($fields as $field => $value) {
+        if ($value !== null && $value !== '') {
+            // These fields are operational audit metadata. A transient write
+            // failure must not prevent the caller from applying an already
+            // verified provider result to the core payment state.
+            try {
+                update('Payment_report', $field, $value, 'id_order', (string)$orderId);
+            } catch (Throwable $e) {
+                error_log('[hooshpay] metadata update failed for ' . (string)$orderId . ' field=' . $field . ': ' . $e->getMessage());
+            }
+        }
+    }
+}
+
+/** Server-side final verification used by webhook, payment return and cron polling. */
+function hooshpayVerifyPaidInvoiceForReport(array $report)
+{
+    $uid = trim((string)($report['hooshpay_uid'] ?? ''));
+    if ($uid === '') {
+        return ['ok' => false, 'reason' => 'شناسه فاکتور هوش‌پی ثبت نشده است'];
+    }
+
+    $verified = hooshpayVerifyInvoice($uid);
+    if (!is_array($verified) || empty($verified['success'])) {
+        return ['ok' => false, 'reason' => (string)($verified['error'] ?? $verified['message'] ?? 'تأیید نهایی هوش‌پی ناموفق بود')];
+    }
+    if (!hooshpayInvoiceIsPaid($verified)) {
+        return ['ok' => false, 'reason' => 'هوش‌پی پرداخت را تأیید نکرده است'];
+    }
+
+    $match = hooshpayInvoiceMatchesReport($report, $verified);
+    if (empty($match['ok'])) {
+        return ['ok' => false, 'reason' => (string)($match['reason'] ?? 'فاکتور هوش‌پی نامعتبر است')];
+    }
+
+    hooshpayPersistInvoiceMetadata((string)$report['id_order'], $verified, true);
+    return ['ok' => true, 'response' => $verified];
 }

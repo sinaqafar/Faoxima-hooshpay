@@ -12,6 +12,7 @@ export function iconForMethod(m) {
     if (id === 'blupal')               return 'tronado';
     if (id === 'atlaspay')             return 'tronado';
     if (id === 'tetrapay')             return 'tronado';
+    if (id === 'hooshpay')             return 'coin';
     if (id.startsWith('iranpay'))      return 'flower';
     if (id === 'zarinpal')             return 'coin';
     if (id === 'plisio')               return 'exchange';
@@ -34,8 +35,9 @@ export function methodLabel(m) {
     if (id === 'cubepay')                   return 'کیوب‌پی';
     if (id === 'blupal')                    return 'بلوپال';
     if (id === 'atlaspay')                  return 'اطلس‌پی';
-    if (id === 'tetrapay')                  return 'تتراپی';
-    if (id === 'zarinpal')                  return 'زرین‌پال';
+    if (id === 'tetrapay')             return 'تتراپی';
+    if (id === 'hooshpay')             return 'هوش‌پی';
+    if (id === 'zarinpal')             return 'زرین‌پال';
     return m || 'پرداخت';
 }
 
@@ -406,7 +408,7 @@ function isAutoConfirmGateway(methodId) {
     return (
         id === 'plisio' || id === 'nowpayment' || id === 'digitaltron' ||
         id.startsWith('iranpay') || id === 'tonpay' || id === 'cubepay' ||
-        id === 'zarinpal' || id === 'blupal' || id === 'atlaspay' || id === 'tetrapay'
+        id === 'zarinpal' || id === 'blupal' || id === 'atlaspay' || id === 'tetrapay' || id === 'hooshpay'
     );
 }
 
@@ -531,13 +533,20 @@ export function startUrlGatewayFlow(rootView, methodId, obj, opts = {}) {
 
     loadGatewayWatch().then((mod) => {
         if (!mod || typeof mod.startGatewayWatch !== 'function') return;
+        const isHooshPay = String(methodId || '').toLowerCase() === 'hooshpay';
+        const payableAmount = Number(obj.payable_amount || 0);
+        const creditedAmount = Number(obj.amount || 0);
+        const hooshPayNotice = isHooshPay && payableAmount > 0
+            ? `مبلغ قابل پرداخت در هوش‌پی: ${fmtNum(payableAmount)} تومان${payableAmount !== creditedAmount ? ` (اعتبار فاکتور: ${fmtNum(creditedAmount)} تومان)` : ''}`
+            : 'به‌محض تایید درگاه، صفحه به‌روزرسانی می‌شود.';
         const cleanup = mod.startGatewayWatch(watchHost, {
             orderId,
-            title: isCryptoMethod(methodId) ? 'در انتظار تایید پرداخت ارزی…' : 'در انتظار تایید پرداخت…',
-            subtitle: 'به‌محض تایید درگاه، صفحه به‌روزرسانی می‌شود.',
+            title: isCryptoMethod(methodId) ? 'در انتظار تایید پرداخت ارزی…' : (isHooshPay ? 'در انتظار تایید پرداخت هوش‌پی…' : 'در انتظار تایید پرداخت…'),
+            subtitle: hooshPayNotice,
             gatewayUrl: url,
             isCrypto: isCryptoMethod(methodId),
             mode: opts.purchaseUsername ? 'direct_buy' : 'recharge',
+            expiresAtSec: Number(obj.expires_at || 0) || 0,
             timeoutSec: gatewayTimeoutSec(methodId),
             pollEverySec: 5,
             onSuccess: (statusObj) => renderGatewaySuccess(watchHost, statusObj, opts),

@@ -312,6 +312,14 @@ final class PaymentInitHandler extends BaseHandler
 
     private function purgeStaleGatewayOrders(int $userId, string $method): void
     {
+        // A locally stale HooshPay record is still payable at the upstream gateway.
+        // Never just mark it expired: first reconcile/cancel it remotely so an old
+        // hosted link cannot later credit an invoice the UI called expired.
+        if ($method === 'hooshpay') {
+            $this->purgeStaleHooshPayOrders($userId);
+            return;
+        }
+
         try {
             $rows = FaoximaDb::fetchAll(
                 "SELECT id_order, time
@@ -361,6 +369,131 @@ final class PaymentInitHandler extends BaseHandler
         }
     }
 
+
+    /**
+     * Resolve old HooshPay payment links before allowing a new link for the same
+     * user. A failed upstream call intentionally leaves the local invoice pending,
+     * which makes the normal pending-invoice guard ask the user to retry/resume it.
+     */
+    private function purgeStaleHooshPayOrders(int $userId): void
+    {
+        if (!function_exists('hooshpayGetInvoice') || !function_exists('hooshpayInvoiceMatchesReport')) {
+            return;
+        }
+
+        try {
+            $rows = FaoximaDb::fetchAll(
+                "SELECT * FROM Payment_report
+                  WHERE id_user = :user
+                    AND payment_Status IN ('Unpaid', 'pending', 'waiting')
+                    AND Payment_Method = 'hooshpay'
+                    AND source = 'miniapp'",
+                [':user' => $userId]
+            );
+        } catch (Throwable $e) {
+            // A migration may still be pending on an upgraded installation. The
+            // creation flow's persistence checks below remain fail-closed.
+            FaoximaLogger::userFacing('HooshPay stale-invoice lookup failed', ['user' => $userId, 'err' => $e->getMessage()]);
+            return;
+        }
+
+        $cutoff = time() - ($this->methodStaleMinutes('hooshpay') * 60);
+        foreach ($rows as $report) {
+            $orderId = (string)($report['id_order'] ?? '');
+            $createdAt = $this->parseLegacyTime((string)($report['time'] ?? ''));
+            if ($orderId === '' || ($createdAt !== null && $createdAt > $cutoff)) {
+                continue;
+            }
+
+            $uid = trim((string)($report['hooshpay_uid'] ?? ''));
+            if ($uid === '') {
+                $this->saveHooshPayTerminalStatus($orderId, $userId, 'expire', 'expired');
+                continue;
+            }
+
+            try {
+                $remote = hooshpayGetInvoice($uid);
+                if (!is_array($remote) || empty($remote['success'])) {
+                    continue;
+                }
+                $match = hooshpayInvoiceMatchesReport($report, $remote);
+                if (empty($match['ok'])) {
+                    FaoximaLogger::userFacing('HooshPay stale-invoice mismatch', [
+                        'order' => $orderId,
+                        'reason' => (string)($match['reason'] ?? 'unknown'),
+                    ]);
+                    continue;
+                }
+                if (function_exists('hooshpayPersistInvoiceMetadata')) {
+                    hooshpayPersistInvoiceMetadata($orderId, $remote, false);
+                }
+
+                $remoteStatus = function_exists('hooshpayInvoiceStatus') ? hooshpayInvoiceStatus($remote) : '';
+                if (function_exists('hooshpayInvoiceIsPaid') && hooshpayInvoiceIsPaid($remote)) {
+                    // Keep it pending until the normal status/cron reconciliation
+                    // performs final /verify and fulfillment.
+                    continue;
+                }
+                if (in_array($remoteStatus, ['expired'], true)) {
+                    $this->saveHooshPayTerminalStatus($orderId, $userId, 'expire', 'expired');
+                    continue;
+                }
+                if (in_array($remoteStatus, ['cancelled', 'canceled'], true)) {
+                    $this->saveHooshPayTerminalStatus($orderId, $userId, 'cancelled', 'cancelled');
+                    continue;
+                }
+                if ($remoteStatus === 'failed') {
+                    $this->saveHooshPayTerminalStatus($orderId, $userId, 'reject', 'failed', 'پرداخت از سمت هوش‌پی ناموفق شد');
+                    continue;
+                }
+
+                if (function_exists('hooshpayCancelInvoice')) {
+                    $cancel = hooshpayCancelInvoice($uid);
+                    if (is_array($cancel) && !empty($cancel['success'])
+                        && !(function_exists('hooshpayInvoiceIsPaid') && hooshpayInvoiceIsPaid($cancel))) {
+                        if (function_exists('hooshpayPersistInvoiceMetadata')) {
+                            hooshpayPersistInvoiceMetadata($orderId, $cancel, false);
+                        }
+                        $this->saveHooshPayTerminalStatus($orderId, $userId, 'cancelled', 'cancelled');
+                    }
+                }
+            } catch (Throwable $e) {
+                FaoximaLogger::userFacing('HooshPay stale-invoice reconciliation failed', [
+                    'order' => $orderId,
+                    'err' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    private function saveHooshPayTerminalStatus(string $orderId, int $userId, string $localStatus, string $remoteStatus, string $reason = ''): void
+    {
+        try {
+            $params = [
+                ':local_status' => $localStatus,
+                ':remote_status' => $remoteStatus,
+                ':order' => $orderId,
+                ':user' => (string)$userId,
+            ];
+            $reasonSql = '';
+            if ($reason !== '') {
+                $reasonSql = ', dec_not_confirmed = :reason';
+                $params[':reason'] = $reason;
+            }
+            FaoximaDb::execute(
+                "UPDATE Payment_report
+                    SET payment_Status = :local_status, hooshpay_status = :remote_status{$reasonSql}
+                  WHERE id_order = :order AND id_user = :user AND source = 'miniapp'
+                    AND Payment_Method = 'hooshpay' AND payment_Status IN ('Unpaid', 'pending', 'waiting', 'expire')",
+                $params
+            );
+            if (function_exists('rx_redis_del')) {
+                rx_redis_del('faoxima:paystatus:' . $orderId . ':' . $userId);
+            }
+        } catch (Throwable $e) {
+            FaoximaLogger::userFacing('HooshPay terminal status update failed', ['order' => $orderId, 'err' => $e->getMessage()]);
+        }
+    }
 
     private function methodStaleMinutes(string $method): int
     {
@@ -728,28 +861,123 @@ final class PaymentInitHandler extends BaseHandler
 
     private function handleHooshPay(int $amount): void
     {
-        if (!function_exists('hooshpayCreateInvoice')) {
+        if ($this->paySetting('statushooshpay') !== 'onhooshpay') {
+            FaoximaResponse::forbidden('❌ درگاه هوش‌پی غیرفعال است.');
+        }
+        if (!function_exists('hooshpayCreateInvoice') || !function_exists('hooshpayInvoiceData')) {
             FaoximaResponse::fail(503, '❌ تابع درگاه هوش‌پی روی این سرور موجود نیست.');
         }
-        $orderId = bin2hex(random_bytes(5));
+        if (trim($this->paySetting('apihooshpay')) === '') {
+            FaoximaResponse::fail(503, '❌ کلید API هوش‌پی در تنظیمات ثبت نشده است.');
+        }
+        if (trim($this->paySetting('secrethooshpay')) === '') {
+            FaoximaResponse::fail(503, '❌ Secret هوش‌پی برای اعتبارسنجی کال‌بک ثبت نشده است.');
+        }
+        if (!function_exists('hooshpayCallbackUrl') || hooshpayCallbackUrl() === '') {
+            FaoximaResponse::fail(503, '❌ آدرس HTTPS کال‌بک هوش‌پی در تنظیمات معتبر نیست.');
+        }
+        if ($amount < 1000) {
+            FaoximaResponse::fail(422, '❌ حداقل مبلغ پرداخت با هوش‌پی ۱٬۰۰۰ تومان است.');
+        }
+
+        $orderId = bin2hex(random_bytes(16));
         $this->insertPaymentReport('hooshpay', $amount, $orderId);
-        $configuredCallback = trim((string)($get('hooshpay_callback_url') ?? ''));
-        $GLOBALS['hooshpay_callback_url'] = $configuredCallback !== '' ? $configuredCallback : ((isset($_SERVER['HTTP_HOST']) ? ((isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST']) : '') . '/hooshpay_callback.php');
-        try { $pay = hooshpayCreateInvoice($orderId, $amount); } catch (Throwable $e) {
+        $storedReport = FaoximaDb::fetchOne(
+            "SELECT id_order FROM Payment_report WHERE id_order = :order AND id_user = :user AND source = 'miniapp' LIMIT 1",
+            [':order' => $orderId, ':user' => (string)$this->user['id']]
+        );
+        if (!is_array($storedReport)) {
+            FaoximaLogger::userFacing('HooshPay invoice was not persisted before gateway creation', ['order' => $orderId]);
+            FaoximaResponse::serverError('❌ ثبت فاکتور پرداخت ناموفق بود؛ دوباره تلاش کنید.');
+        }
+        update('Payment_report', 'hooshpay_amount', $amount, 'id_order', $orderId);
+        update('Payment_report', 'hooshpay_fee_mode', hooshpayFeeMode($this->paySetting('hooshpay_fee_mode', 'seller')), 'id_order', $orderId);
+
+        try {
+            $pay = hooshpayCreateInvoice($orderId, $amount, [
+                'fee_mode'    => $this->paySetting('hooshpay_fee_mode', 'seller'),
+                'description' => 'شارژ حساب فاکسیما — سفارش ' . $orderId,
+            ]);
+        } catch (Throwable $e) {
+            FaoximaLogger::userFacing('hooshpayCreateInvoice() threw', ['err' => $e->getMessage(), 'order' => $orderId]);
             update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+            update('Payment_report', 'dec_not_confirmed', 'ارتباط با هوش‌پی ناموفق بود', 'id_order', $orderId);
             FaoximaResponse::fail(502, '❌ خطا در ارتباط با درگاه هوش‌پی.');
         }
-        $uid = is_array($pay) ? trim((string)($pay['data']['uid'] ?? '')) : '';
-        $url = is_array($pay) ? trim((string)($pay['data']['payment_url'] ?? '')) : '';
-        if ($uid === '' || $url === '') {
+
+        $data = is_array($pay) ? hooshpayInvoiceData($pay) : [];
+        $uid = trim((string)($data['uid'] ?? ''));
+        $url = trim((string)($data['payment_url'] ?? ''));
+        $returnedAmount = isset($data['amount']) && is_numeric($data['amount']) ? (int)$data['amount'] : null;
+        $payableAmount = isset($data['payable_amount']) && is_numeric($data['payable_amount']) ? (int)$data['payable_amount'] : 0;
+
+        if (empty($pay['success']) || $uid === '' || !function_exists('hooshpayIsHttpsUrl') || !hooshpayIsHttpsUrl($url)
+            || $payableAmount < 1 || ($returnedAmount !== null && $returnedAmount !== $amount)) {
+            $error = is_array($pay) ? (string)($pay['error'] ?? $pay['message'] ?? 'پاسخ نامعتبر از هوش‌پی') : 'پاسخ نامعتبر از هوش‌پی';
+            FaoximaLogger::userFacing('hooshpayCreateInvoice() returned invalid data', ['order' => $orderId, 'error' => $error]);
+            // An invoice may have been created even if its response was incomplete;
+            // cancel it so a customer cannot pay an invoice that cannot be mapped.
+            if ($uid !== '' && function_exists('hooshpayCancelInvoice')) {
+                try { hooshpayCancelInvoice($uid); } catch (Throwable $ignore) {}
+            }
             update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+            update('Payment_report', 'dec_not_confirmed', $error, 'id_order', $orderId);
             FaoximaResponse::fail(502, '❌ ساخت لینک پرداخت هوش‌پی ناموفق بود.');
         }
-        update('Payment_report', 'hooshpay_uid', $uid, 'id_order', $orderId);
-        update('Payment_report', 'hooshpay_payment_url', $url, 'id_order', $orderId);
-        $payable = (int)($pay['data']['payable_amount'] ?? $amount);
-        update('Payment_report', 'price', $payable, 'id_order', $orderId);
-        FaoximaResponse::ok(['kind'=>'url', 'url'=>$url, 'order_id'=>$orderId, 'message'=>'🌐 برای پرداخت روی لینک زیر کلیک کنید.']);
+
+        try {
+            $saved = FaoximaDb::execute(
+                "UPDATE Payment_report
+                    SET hooshpay_uid = :uid, hooshpay_payment_url = :url,
+                        hooshpay_payable_amount = :payable, hooshpay_status = 'pending'
+                  WHERE id_order = :order AND id_user = :user AND source = 'miniapp'
+                    AND Payment_Method = 'hooshpay' AND payment_Status = 'Unpaid'",
+                [
+                    ':uid' => $uid,
+                    ':url' => $url,
+                    ':payable' => $payableAmount,
+                    ':order' => $orderId,
+                    ':user' => (string)$this->user['id'],
+                ]
+            );
+            if ($saved !== 1) {
+                throw new RuntimeException('payment record was not updated');
+            }
+        } catch (Throwable $e) {
+            FaoximaLogger::userFacing('HooshPay invoice mapping persistence failed', ['order' => $orderId, 'err' => $e->getMessage()]);
+            if (function_exists('hooshpayCancelInvoice')) {
+                try { hooshpayCancelInvoice($uid); } catch (Throwable $ignore) {}
+            }
+            update('Payment_report', 'payment_Status', 'reject', 'id_order', $orderId);
+            update('Payment_report', 'dec_not_confirmed', 'ذخیرهٔ امن فاکتور هوش‌پی ناموفق بود', 'id_order', $orderId);
+            FaoximaResponse::serverError('❌ ثبت فاکتور پرداخت ناموفق بود؛ دوباره تلاش کنید.');
+        }
+        // The core UID/URL mapping above is already durable. Metadata is useful
+        // for display and support, but a transient optional-field write must not
+        // strand a safely created hosted invoice without returning its URL.
+        try {
+            hooshpayPersistInvoiceMetadata($orderId, $pay);
+        } catch (Throwable $e) {
+            FaoximaLogger::userFacing('HooshPay metadata persistence failed after core mapping', [
+                'order' => $orderId,
+                'err' => $e->getMessage(),
+            ]);
+        }
+
+        $expiresAtRaw = trim((string)($data['expires_at'] ?? ''));
+        $expiresAt = $expiresAtRaw !== '' ? strtotime($expiresAtRaw) : false;
+        FaoximaResponse::ok([
+            'kind'            => 'url',
+            'url'             => $url,
+            'order_id'        => $orderId,
+            'amount'          => $amount,
+            'payable_amount'  => $payableAmount,
+            'merchant_credit' => isset($data['merchant_credit']) && is_numeric($data['merchant_credit']) ? (int)$data['merchant_credit'] : null,
+            'fee_amount'      => isset($data['fee_amount']) && is_numeric($data['fee_amount']) ? (int)$data['fee_amount'] : null,
+            'fee_mode'        => hooshpayFeeMode($data['fee_mode'] ?? $this->paySetting('hooshpay_fee_mode', 'seller')),
+            'expires_at'      => $expiresAt !== false ? (int)$expiresAt : null,
+            'message'         => '🌐 مبلغ قابل پرداخت را در صفحهٔ هوش‌پی بررسی و پرداخت کنید.',
+        ]);
     }
 
 

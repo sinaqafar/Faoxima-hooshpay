@@ -21,11 +21,12 @@ final class PendingPaymentsHandler extends BaseHandler
         try {
             $rows = FaoximaDb::fetchAll(
                 "SELECT id, id_order, time, price, payment_Status, Payment_Method,
-                        dec_not_confirmed, crypto_currency, crypto_tx_hash, tonpay_invoice_id, cubepay_payment_link, blupal_invoice_id, atlaspay_order_id, tetrapay_token
+                        dec_not_confirmed, crypto_currency, crypto_tx_hash, tonpay_invoice_id, cubepay_payment_link, blupal_invoice_id, atlaspay_order_id, tetrapay_token,
+                        hooshpay_uid, hooshpay_payment_url, hooshpay_payable_amount, hooshpay_fee_amount, hooshpay_fee_mode, hooshpay_expires_at
                    FROM Payment_report
                   WHERE id_user = :u
                     AND payment_Status IN ('Unpaid','waiting','AwaitingHash','pending','expire')
-                    AND Payment_Method IN ('plisio','nowpayment','digitaltron','arze digital offline','cart to cart','carttocart_pv','iranpay2','tonpay','cubepay','blupal','atlaspay','tetrapay')
+                    AND Payment_Method IN ('plisio','nowpayment','digitaltron','arze digital offline','cart to cart','carttocart_pv','iranpay2','tonpay','cubepay','blupal','atlaspay','tetrapay','hooshpay')
                     AND source = 'miniapp'
                   ORDER BY id DESC
                   LIMIT 8",
@@ -74,6 +75,8 @@ final class PendingPaymentsHandler extends BaseHandler
                     return !empty($labels['atlaspay']) ? $labels['atlaspay'] : 'اطلس‌پی';
                 case 'tetrapay':
                     return !empty($labels['tetrapay']) ? $labels['tetrapay'] : 'تتراپی';
+                case 'hooshpay':
+                    return !empty($labels['hooshpay']) ? $labels['hooshpay'] : 'هوش‌پی';
                 case 'zarinpal':
                     return !empty($labels['zarinpal']) ? $labels['zarinpal'] : 'زرین‌پال';
                 case 'plisio':
@@ -118,6 +121,8 @@ final class PendingPaymentsHandler extends BaseHandler
                 if (trim((string)($r['atlaspay_order_id'] ?? '')) === '') continue;
             } elseif ($methodLc === 'tetrapay') {
                 if (trim((string)($r['tetrapay_token'] ?? '')) === '') continue;
+            } elseif ($methodLc === 'hooshpay') {
+                if (trim((string)($r['hooshpay_uid'] ?? '')) === '' || trim((string)($r['hooshpay_payment_url'] ?? '')) === '') continue;
             } elseif (in_array($methodLc, ['plisio', 'nowpayment', 'digitaltron', 'iranpay2'], true)) {
                 if ($decVal === '') continue;
             }
@@ -127,7 +132,17 @@ final class PendingPaymentsHandler extends BaseHandler
             $status = (string)($r['payment_Status'] ?? '');
             $windowSec = $this->methodWindow($method, false);
             $expiresAt = $createdAt + $windowSec;
-            if ($status !== 'expire' && $expiresAt < $now) {
+            if ($methodLc === 'hooshpay') {
+                $remoteExpiry = $this->parseLegacyTime((string)($r['hooshpay_expires_at'] ?? ''));
+                if ($remoteExpiry !== null && $remoteExpiry > 0) {
+                    $expiresAt = $remoteExpiry;
+                }
+            }
+            // HooshPay's hosted-link expiry is only a UI deadline. Keep its row
+            // resumable until the dedicated status poller/return reconciliation
+            // records the provider's terminal state; otherwise a customer could
+            // be blocked by the pending guard without a visible payment card.
+            if ($status !== 'expire' && $expiresAt < $now && $methodLc !== 'hooshpay') {
                 continue;
             }
 
@@ -139,6 +154,9 @@ final class PendingPaymentsHandler extends BaseHandler
                 'method'        => $method,
                 'method_label'  => $resolveMethodLabel($method),
                 'amount'        => (int)$r['price'],
+                'payable_amount'=> $methodLc === 'hooshpay' ? (int)($r['hooshpay_payable_amount'] ?? $r['price']) : null,
+                'fee_amount'    => $methodLc === 'hooshpay' ? (int)($r['hooshpay_fee_amount'] ?? 0) : null,
+                'fee_mode'      => $methodLc === 'hooshpay' ? (trim((string)($r['hooshpay_fee_mode'] ?? '')) ?: null) : null,
                 'status'        => (string)$r['payment_Status'],
                 'created_at'    => $createdAt,
                 'expires_at'    => $expiresAt,

@@ -18,7 +18,7 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
         }
 
         $report = FaoximaDb::fetchOne(
-            'SELECT id_order, payment_Status, Payment_Method, atlaspay_order_id FROM Payment_report
+            'SELECT id_order, payment_Status, Payment_Method, atlaspay_order_id, hooshpay_uid FROM Payment_report
               WHERE id_order = :o AND id_user = :u AND source = \'miniapp\' LIMIT 1',
             [':o' => $orderId, ':u' => (string)$this->user['id']]
         );
@@ -26,7 +26,7 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
             FaoximaResponse::notFound('Payment not found');
         }
         $method = trim((string)($report['Payment_Method'] ?? ''));
-        $cancellable = ['arze digital offline', 'plisio', 'nowpayment', 'digitaltron', 'cart to cart', 'carttocart_pv', 'iranpay2', 'tonpay', 'cubepay', 'blupal', 'atlaspay', 'tetrapay'];
+        $cancellable = ['arze digital offline', 'plisio', 'nowpayment', 'digitaltron', 'cart to cart', 'carttocart_pv', 'iranpay2', 'tonpay', 'cubepay', 'blupal', 'atlaspay', 'tetrapay', 'hooshpay'];
         if (!in_array($method, $cancellable, true)) {
             FaoximaResponse::fail(422, 'این فاکتور قابل لغو از این طریق نیست');
         }
@@ -42,11 +42,50 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
             return;
         }
 
-        if (!in_array($status, ['Unpaid', 'AwaitingHash', 'expire'], true)) {
+        if (!in_array($status, ['Unpaid', 'AwaitingHash', 'waiting', 'pending', 'expire'], true)) {
             FaoximaResponse::fail(409, 'این فاکتور در وضعیتی نیست که قابل لغو باشد (' . $status . ')');
         }
 
-        MiniDiscount::releaseLastUnpaidDiscount((string)$this->user['id']);
+        // HooshPay cancellation must succeed remotely before its local invoice is
+        // discarded. This prevents a paid/settling gateway invoice from being
+        // silently marked as cancelled in Faoxima.
+        if ($method === 'hooshpay') {
+            $uid = trim((string)($report['hooshpay_uid'] ?? ''));
+            if ($uid === '' || !function_exists('hooshpayCancelInvoice')) {
+                FaoximaResponse::fail(409, 'لغو فاکتور هوش‌پی در دسترس نیست؛ با پشتیبانی تماس بگیرید');
+            }
+            try {
+                $cancel = hooshpayCancelInvoice($uid);
+            } catch (Throwable $e) {
+                FaoximaLogger::exception($e, 'HooshPay cancel-invoice request failed', ['user' => $this->user['id'], 'order' => $orderId]);
+                FaoximaResponse::fail(503, 'ارتباط با هوش‌پی برای لغو فاکتور ناموفق بود؛ دوباره تلاش کنید');
+            }
+            $remoteStatus = function_exists('hooshpayInvoiceStatus') ? hooshpayInvoiceStatus($cancel) : '';
+            if (!is_array($cancel) || empty($cancel['success']) || (function_exists('hooshpayInvoiceIsPaid') && hooshpayInvoiceIsPaid($cancel))) {
+                FaoximaLogger::userFacing('HooshPay cancel rejected', [
+                    'user' => $this->user['id'],
+                    'order' => $orderId,
+                    'status' => $remoteStatus,
+                ]);
+                FaoximaResponse::fail(409, $remoteStatus === 'paid'
+                    ? 'پرداخت در هوش‌پی انجام شده است؛ وضعیت فاکتور را بررسی کنید'
+                    : 'هوش‌پی لغو فاکتور را تأیید نکرد؛ دوباره تلاش کنید');
+            }
+            if (function_exists('hooshpayPersistInvoiceMetadata')) {
+                try {
+                    hooshpayPersistInvoiceMetadata($orderId, $cancel, false);
+                } catch (Throwable $e) {
+                    // The remote cancellation is authoritative; proceed with the
+                    // guarded local terminal update even if optional audit fields
+                    // could not be written at this instant.
+                    FaoximaLogger::userFacing('HooshPay cancel metadata persistence failed', [
+                        'user' => $this->user['id'],
+                        'order' => $orderId,
+                        'err' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
 
         if ($method === 'atlaspay' && function_exists('atlaspayCancelOrder')) {
             $atlaspayOrderId = trim((string)($report['atlaspay_order_id'] ?? ''));
@@ -64,17 +103,29 @@ final class CryptoCancelInvoiceHandler extends BaseHandler
 
         try {
             $pdo = FaoximaDb::pdo();
+            $setClause = $method === 'hooshpay'
+                ? "payment_Status = 'cancelled', hooshpay_status = 'cancelled'"
+                : "payment_Status = 'cancelled'";
             $stmt = $pdo->prepare(
                 "UPDATE Payment_report
-                    SET payment_Status = 'cancelled'
+                    SET {$setClause}
                   WHERE id_order = :o
                     AND id_user = :u
                     AND source = 'miniapp'
-                    AND payment_Status IN ('Unpaid', 'AwaitingHash', 'expire')"
+                    AND payment_Status IN ('Unpaid', 'AwaitingHash', 'waiting', 'pending', 'expire')"
             );
             $stmt->bindValue(':o', $orderId, PDO::PARAM_STR);
             $stmt->bindValue(':u', (string)$this->user['id'], PDO::PARAM_STR);
             $stmt->execute();
+            if ($stmt->rowCount() !== 1) {
+                // Do not release a discount if a callback/poller finalized the
+                // invoice between the upstream cancellation and this update.
+                FaoximaResponse::fail(409, 'وضعیت فاکتور هم‌زمان تغییر کرده است؛ وضعیت را دوباره بررسی کنید');
+            }
+            MiniDiscount::releaseLastUnpaidDiscount((string)$this->user['id']);
+            if (function_exists('rx_redis_del')) {
+                rx_redis_del('faoxima:paystatus:' . $orderId . ':' . (string)$this->user['id']);
+            }
         } catch (Throwable $e) {
             FaoximaLogger::exception($e, 'Crypto cancel-invoice update failed', [
                 'user'  => $this->user['id'],

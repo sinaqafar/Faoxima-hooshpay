@@ -309,6 +309,14 @@ function renderPendingCard(p) {
         : fmtRemainMmSs(p.remaining_sec || 0);
     const methodFa = p.method_label || methodLabel(p.method);
     const cur = p.currency_code ? ` (${escapeHtml(p.currency_code)})` : '';
+    const isHooshPay = String(p.method || '').toLowerCase() === 'hooshpay';
+    const payableAmount = Number(p.payable_amount || 0);
+    const baseAmount = Number(p.amount || 0);
+    const shownAmount = isHooshPay && payableAmount > 0 ? payableAmount : baseAmount;
+    const amountLabel = isHooshPay ? 'مبلغ قابل پرداخت' : 'مبلغ';
+    const creditLine = isHooshPay && payableAmount > 0 && payableAmount !== baseAmount
+        ? `<div><span class="muted">اعتبار فاکتور</span><span class="mono">${escapeHtml(fmtPrice(baseAmount))}</span></div>`
+        : '';
     return `
         <div class="pending-banner">
             <div class="pending-banner-head">
@@ -317,7 +325,8 @@ function renderPendingCard(p) {
             </div>
             <div class="pending-banner-grid">
                 <div><span class="muted">کد فاکتور</span><span class="mono">${escapeHtml(p.order_id)}</span></div>
-                <div><span class="muted">مبلغ</span><span class="mono accent">${escapeHtml(fmtPrice(p.amount))}</span></div>
+                <div><span class="muted">${amountLabel}</span><span class="mono accent">${escapeHtml(fmtPrice(shownAmount))}</span></div>
+                ${creditLine}
                 <div><span class="muted">باقی‌مانده</span><span class="mono pending-remaining" data-expires-at="${expiresAt}">${escapeHtml(initialRemain)}</span></div>
             </div>
             <div class="pending-banner-actions">

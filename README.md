@@ -13,7 +13,6 @@
   <a href="https://mmd-amir.github.io/faoxima-docs/index.html"><img src="https://img.shields.io/badge/Documentation-Online_Docs-5a63ff?style=for-the-badge&logo=gitbook&logoColor=white" alt="Documentation"></a>
   <a href="https://t.me/faoxima"><img src="https://img.shields.io/badge/Telegram_Channel-@faoxima-229ED9?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Channel"></a>
   <a href="https://nowpayments.io/donation/faoximabot"><img src="https://img.shields.io/badge/Donate-NowPayments-00c08b?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Donate"></a>
-- 🌐 **HooshPay** (کارت‌به‌کارت با تأیید آنی)
 </p>
 
 <p align="center">
@@ -102,6 +101,16 @@
 - 🌐 **Plisio** (درگاه بین‌المللی کریپتو)
 - 💳 **کارت‌به‌کارت دستی** (همراه با ثبت فیش و تایید ادمین)
 
+### پیکربندی امن HooshPay
+
+1. ابتدا مهاجرت معمول فاکسیما را اجرا کنید تا فیلدهای HooshPay در `Payment_report` و تنظیمات پیش‌فرض ایجاد شوند.
+2. در پنل مدیریت ربات، از «مدیریت درگاه‌ها → هوش‌پی → تنظیمات»، **API Key** و **Secret** را ثبت کنید. Secret فقط روی سرور نگهداری می‌شود.
+3. آدرس عمومی HTTPS کال‌بک را به `https://دامنه-شما/hooshpay_callback.php` تنظیم کنید (یا اگر `domainhosts` درست تنظیم شده است، حالت خودکار را نگه دارید). این مسیر باید از اینترنت در دسترس باشد.
+4. در همان صفحه، نحوهٔ پرداخت کارمزد، حداقل/حداکثر مبلغ، URL بازگشت و کش‌بک را مشخص کنید؛ سپس درگاه را فعال کنید. مبلغی که در Mini App نمایش داده می‌شود، `payable_amount` نهایی HooshPay است و اعتبار کیف پول فقط بر مبنای مبلغ پایهٔ فاکتور ثبت می‌شود.
+5. کرون اصلی (`cron/cron.php`) را فعال نگه دارید. وب‌هوک مسیر اصلی تأیید است و پولر `hooshpaycheck` برای بازگشت مشتری، تأخیر وب‌هوک و بازیابی امن پرداخت‌ها اجرا می‌شود.
+
+پرداخت فقط بعد از تطبیق شناسه/مبلغ سفارش و فراخوانی نهایی `POST /invoices/{uid}/verify` تأیید می‌شود. هرگز API Key یا Secret را در کد Mini App قرار ندهید.
+
 ---
 
 ## ⚙️ پیش‌نیازها
@@ -150,7 +159,6 @@
 
 <p align="center">
   👉 <strong>درگاه دونیت NowPayments (ارزهای دیجیتال):</strong><br>
-- 🌐 **HooshPay** (کارت‌به‌کارت با تأیید آنی)
   <a href="https://nowpayments.io/donation/faoximabot" target="_blank" rel="noopener">https://nowpayments.io/donation/faoximabot</a>
 </p>
 
