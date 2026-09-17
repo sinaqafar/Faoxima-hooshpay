@@ -30,6 +30,7 @@ final class PaymentMethodsHandler extends BaseHandler
         $blupalActive   = $get('statusblupal');
         $atlaspayActive = $get('statusatlaspay');
         $tetrapayActive = $get('statustetrapay');
+        $hooshpayActive = $get('statushooshpay');
         $plisio         = $get('nowpaymentstatus');
         $nowpayment     = $get('statusnowpayment');
         $digi           = $get('digistatus');
@@ -57,6 +58,7 @@ final class PaymentMethodsHandler extends BaseHandler
             'blupal'        => ['minbalanceblupal',        'maxbalanceblupal'],
             'atlaspay'      => ['minbalanceatlaspay',      'maxbalanceatlaspay'],
             'tetrapay'      => ['minbalancetetrapay',      'maxbalancetetrapay'],
+            'hooshpay'      => ['minbalancehooshpay',      'maxbalancehooshpay'],
         ];
         $methodLimitsResolver = function (string $methodId) use ($perMethodKeys, $get, $minBalance, $maxBalance): array {
             if (isset($perMethodKeys[$methodId])) {
@@ -182,6 +184,9 @@ final class PaymentMethodsHandler extends BaseHandler
                 'icon'  => '🔷',
                 'kind'  => 'form',
             ];
+        }
+        if ($hooshpayActive === 'onhooshpay') {
+            $methods[] = ['id'=>'hooshpay', 'label'=>$L('hooshpay', '🌐 هوش‌پی'), 'icon'=>'🌐', 'kind'=>'form'];
         }
         if ($zarinpal === 'onzarinpal') {
             $methods[] = [

@@ -2153,6 +2153,13 @@ try {
         ['maxbalanceatlaspay', 2000000],
         ['helpatlaspay', '2'],
         ['statustetrapay', 'offtetrapay'],
+        ['statushooshpay', 'offhooshpay'],
+        ['apihooshpay', ''],
+        ['secrethooshpay', ''],
+        ['hooshpay_callback_url', ''],
+        ['minbalancehooshpay', 1000],
+        ['maxbalancehooshpay', 10000000],
+        ['helphooshpay', '2'],
         ['apitetrapay', ''],
         ['apiurltetrapay', ''],
         ['chashbacktetrapay', '0'],
@@ -3269,6 +3276,8 @@ try {
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_token",         "VARCHAR(64) NULL");
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_tracking_code", "VARCHAR(64) NULL");
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_payment_link",  "VARCHAR(500) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_uid",           "VARCHAR(100) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_payment_url",   "VARCHAR(500) NULL");
 
     try {
         $haveBlupalIdx = $connect->query("SHOW INDEX FROM Payment_report WHERE Key_name = 'idx_pr_blupal_invoice'");
