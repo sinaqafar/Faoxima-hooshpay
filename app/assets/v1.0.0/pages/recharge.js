@@ -12,6 +12,7 @@ function iconForMethod(m) {
     if (id === 'blupal')               return 'tronado';
     if (id === 'atlaspay')             return 'tronado';
     if (id === 'tetrapay')             return 'tronado';
+    if (id === 'hooshpay')             return 'coin';
     if (id.startsWith('iranpay'))      return 'flower';
     if (id === 'zarinpal')             return 'coin';
     if (id === 'plisio')               return 'exchange';
@@ -422,7 +423,7 @@ function isAutoConfirmGatewayId(id) {
     return (
         x === 'plisio' || x === 'nowpayment' || x === 'digitaltron' ||
         x.startsWith('iranpay') || x === 'tonpay' || x === 'cubepay' ||
-        x === 'zarinpal' || x === 'blupal' || x === 'atlaspay' || x === 'tetrapay'
+        x === 'zarinpal' || x === 'blupal' || x === 'atlaspay' || x === 'tetrapay' || x === 'hooshpay'
     );
 }
 
@@ -1036,13 +1037,21 @@ async function startGatewayWatchForRecharge(view, methodId, obj) {
         }
 
         const isCrypto = methodId === 'plisio' || methodId === 'nowpayment' || methodId === 'digitaltron';
+        const isHooshPay = String(methodId || '').toLowerCase() === 'hooshpay';
+        const payableAmount = Number(obj.payable_amount || 0);
+        const creditedAmount = Number(obj.amount || 0);
+        const expiry = Number(obj.expires_at || 0);
+        const hooshPayNotice = isHooshPay && payableAmount > 0
+            ? `مبلغ قابل پرداخت در هوش‌پی: ${fmtNum(payableAmount)} تومان${payableAmount !== creditedAmount ? ` (شارژ کیف پول: ${fmtNum(creditedAmount)} تومان)` : ''}`
+            : 'به‌محض تایید درگاه، نتیجه نمایش داده می‌شود.';
         mod.startGatewayWatch(view, {
             orderId: obj.order_id,
-            title: isCrypto ? 'در انتظار تایید پرداخت ارزی…' : 'در انتظار تایید پرداخت…',
-            subtitle: 'به‌محض تایید درگاه، نتیجه نمایش داده می‌شود.',
+            title: isCrypto ? 'در انتظار تایید پرداخت ارزی…' : (isHooshPay ? 'در انتظار تایید پرداخت هوش‌پی…' : 'در انتظار تایید پرداخت…'),
+            subtitle: hooshPayNotice,
             gatewayUrl: obj.url,
             isCrypto,
             mode: 'recharge',
+            expiresAtSec: expiry > 0 ? expiry : 0,
             timeoutSec: methodId === 'cubepay' ? 3600 : (methodId === 'atlaspay' ? 1200 : (methodId === 'tetrapay' ? 600 : 1800)),
             pollEverySec: 5,
             onSuccess: (st) => {

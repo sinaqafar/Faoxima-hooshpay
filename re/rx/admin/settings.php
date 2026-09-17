@@ -796,31 +796,130 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     update("PaySetting", "ValuePay", $text, "NamePay", "apitonpay");
     step('home', $from_id);
 } elseif ($datain == "hooshpaysetting" && $adminrulecheck['rule'] == "administrator") {
+    $hpGet = static function (string $key, string $default = ''): string {
+        $row = select('PaySetting', 'ValuePay', 'NamePay', $key, 'select');
+        return is_array($row) ? trim((string)($row['ValuePay'] ?? $default)) : $default;
+    };
+    $hpFee = function_exists('hooshpayFeeMode') ? hooshpayFeeMode($hpGet('hooshpay_fee_mode', 'seller')) : $hpGet('hooshpay_fee_mode', 'seller');
+    $hpCallback = $hpGet('hooshpay_callback_url');
+    $hpReturn = $hpGet('hooshpay_return_url');
+    $hpMin = $hpGet('minbalancehooshpay', '1000');
+    $hpMax = $hpGet('maxbalancehooshpay', '10000000');
+    $hpCashback = $hpGet('chashbackhooshpay', '0');
+    $hpFeeLabel = ['seller' => 'فروشنده', 'buyer' => 'خریدار', 'split' => 'تقسیمی'][$hpFee] ?? 'فروشنده';
     $hooshpay = json_encode(['inline_keyboard'=>[
-        [['text'=>'🔑 ثبت API Key هوش‌پی','callback_data'=>'hooshpay_apikey']],
-        [['text'=>'🔐 ثبت Secret هوش‌پی','callback_data'=>'hooshpay_secret']],
+        [['text'=>'🔑 ثبت API Key هوش‌پی','callback_data'=>'hooshpay_apikey'], ['text'=>'🔐 ثبت Secret','callback_data'=>'hooshpay_secret']],
+        [['text'=>'🔗 آدرس کال‌بک HTTPS','callback_data'=>'hooshpay_callback_url'], ['text'=>'↩️ آدرس بازگشت','callback_data'=>'hooshpay_return_url']],
+        [['text'=>"⚖️ کارمزد: {$hpFeeLabel}",'callback_data'=>'hooshpay_fee_menu']],
+        [['text'=>"⬇️ حداقل: {$hpMin} تومان",'callback_data'=>'hooshpay_min'], ['text'=>"⬆️ حداکثر: {$hpMax} تومان",'callback_data'=>'hooshpay_max']],
+        [['text'=>"🎁 کش‌بک: {$hpCashback}%",'callback_data'=>'hooshpay_cashback'], ['text'=>'🔎 تست حساب و موجودی','callback_data'=>'hooshpay_test']],
         [['text'=>$textbotlang['Admin']['backadmin'],'callback_data'=>'hooshpay_back']]
     ]], JSON_UNESCAPED_UNICODE);
-    Editmessagetext($from_id, $message_id, '⚙️ تنظیمات درگاه هوش‌پی', $hooshpay);
-} elseif ($text == "🔑 ثبت API Key هوش‌پی" && $adminrulecheck['rule'] == "administrator") {
+    $autoCallback = function_exists('hooshpayCallbackUrl') ? hooshpayCallbackUrl() : '';
+    $callbackHint = $hpCallback !== '' ? $hpCallback : ($autoCallback !== '' ? "خودکار: {$autoCallback}" : 'ثبت نشده');
+    $returnHint = $hpReturn !== '' ? $hpReturn : 'اختیاری (بازگشت به مینی‌اپ به‌صورت خودکار)';
+    $callbackHintHtml = htmlspecialchars($callbackHint, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $returnHintHtml = htmlspecialchars($returnHint, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $hpText = "⚙️ <b>تنظیمات درگاه هوش‌پی</b>\n\n"
+        . "کال‌بک: <code>{$callbackHintHtml}</code>\n"
+        . "بازگشت: <code>{$returnHintHtml}</code>\n"
+        . "کارمزد: <b>{$hpFeeLabel}</b>\n\n"
+        . "برای فعال‌کردن درگاه، API Key، Secret و یک کال‌بک HTTPS قابل‌دسترسی لازم است.\n"
+        . "مقادیر حساس فقط روی سرور نگهداری می‌شوند.";
+    Editmessagetext($from_id, $message_id, $hpText, $hooshpay, 'HTML');
+} elseif (($datain == "hooshpay_apikey" || $text == "🔑 ثبت API Key هوش‌پی") && $adminrulecheck['rule'] == "administrator") {
     $row = select("PaySetting", "ValuePay", "NamePay", "apihooshpay", "select");
-    nm_adminInstantReply($from_id, "🔑 کلید API هوش‌پی را وارد کنید.
-
-مقدار فعلی: " . (($row['ValuePay'] ?? '') ?: 'ثبت نشده'), $backadmin, 'HTML');
+    $saved = trim((string)($row['ValuePay'] ?? ''));
+    $masked = $saved === '' ? 'ثبت نشده' : ('••••' . substr($saved, -4));
+    nm_adminInstantReply($from_id, "🔑 کلید API هوش‌پی را وارد کنید.\n\nوضعیت فعلی: {$masked}", $backadmin, 'HTML');
     step('apihooshpay', $from_id);
-} elseif ($datain == "hooshpay_apikey" || $text == "🔑 ثبت API Key هوش‌پی") {
-    nm_adminInstantReply($from_id, '🔑 کلید API هوش‌پی را وارد کنید.', $backadmin, 'HTML'); step('apihooshpay', $from_id);
 } elseif ($user['step'] == "apihooshpay") {
-    update("PaySetting", "ValuePay", trim($text), "NamePay", "apihooshpay");
+    $value = trim($text);
+    if ($value === '') { nm_adminInstantReply($from_id, '❌ کلید API نمی‌تواند خالی باشد.', $backadmin, 'HTML'); return; }
+    update("PaySetting", "ValuePay", $value, "NamePay", "apihooshpay");
     nm_adminInstantReply($from_id, "✅ کلید API هوش‌پی ذخیره شد.", $backadmin, 'HTML');
     step('home', $from_id);
-} elseif ($datain == "hooshpay_secret" || $text == "🔐 ثبت Secret هوش‌پی" && $adminrulecheck['rule'] == "administrator") {
-    nm_adminInstantReply($from_id, "🔐 Secret هوش‌پی را برای اعتبارسنجی کال‌بک وارد کنید.", $backadmin, 'HTML');
+} elseif (($datain == "hooshpay_secret" || $text == "🔐 ثبت Secret") && $adminrulecheck['rule'] == "administrator") {
+    nm_adminInstantReply($from_id, "🔐 Secret هوش‌پی را برای اعتبارسنجی HMAC کال‌بک وارد کنید. این مقدار هرگز نمایش داده نمی‌شود.", $backadmin, 'HTML');
     step('secrethooshpay', $from_id);
 } elseif ($user['step'] == "secrethooshpay") {
-    update("PaySetting", "ValuePay", trim($text), "NamePay", "secrethooshpay");
+    $value = trim($text);
+    if ($value === '') { nm_adminInstantReply($from_id, '❌ Secret نمی‌تواند خالی باشد.', $backadmin, 'HTML'); return; }
+    update("PaySetting", "ValuePay", $value, "NamePay", "secrethooshpay");
     nm_adminInstantReply($from_id, "✅ Secret هوش‌پی ذخیره شد.", $backadmin, 'HTML');
     step('home', $from_id);
+} elseif ($datain == 'hooshpay_callback_url' && $adminrulecheck['rule'] == 'administrator') {
+    nm_adminInstantReply($from_id, "🔗 آدرس HTTPS عمومی کال‌بک را وارد کنید.\nنمونه: <code>https://example.com/hooshpay_callback.php</code>\n\nبرای برگشت به آدرس خودکار، علامت <code>-</code> را ارسال کنید.", $backadmin, 'HTML');
+    step('hooshpay_callback_url', $from_id);
+} elseif ($user['step'] == 'hooshpay_callback_url') {
+    $value = trim($text);
+    if ($value === '-') {
+        update('PaySetting', 'ValuePay', '', 'NamePay', 'hooshpay_callback_url');
+    } elseif (!function_exists('hooshpayIsHttpsUrl') || !hooshpayIsHttpsUrl($value)) {
+        nm_adminInstantReply($from_id, '❌ آدرس باید یک URL معتبر و HTTPS باشد.', $backadmin, 'HTML'); return;
+    } else {
+        update('PaySetting', 'ValuePay', $value, 'NamePay', 'hooshpay_callback_url');
+    }
+    nm_adminInstantReply($from_id, '✅ آدرس کال‌بک هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_return_url' && $adminrulecheck['rule'] == 'administrator') {
+    nm_adminInstantReply($from_id, "↩️ آدرس HTTPS بازگشت پس از پرداخت را وارد کنید (اختیاری).\nمی‌توانید <code>{order_id}</code> را در آدرس قرار دهید.\nبرای بازگشت پیش‌فرض مینی‌اپ، <code>-</code> را ارسال کنید.", $backadmin, 'HTML');
+    step('hooshpay_return_url', $from_id);
+} elseif ($user['step'] == 'hooshpay_return_url') {
+    $value = trim($text);
+    $valid = $value === '-' || (function_exists('hooshpayIsHttpsUrl') && hooshpayIsHttpsUrl(str_replace('{order_id}', 'sample', $value)));
+    if (!$valid) { nm_adminInstantReply($from_id, '❌ آدرس بازگشت باید HTTPS معتبر باشد.', $backadmin, 'HTML'); return; }
+    update('PaySetting', 'ValuePay', $value === '-' ? '' : $value, 'NamePay', 'hooshpay_return_url');
+    nm_adminInstantReply($from_id, '✅ آدرس بازگشت هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_fee_menu' && $adminrulecheck['rule'] == 'administrator') {
+    $kb = json_encode(['inline_keyboard' => [
+        [['text' => 'فروشنده پرداخت کند', 'callback_data' => 'hooshpay_fee-seller']],
+        [['text' => 'خریدار پرداخت کند', 'callback_data' => 'hooshpay_fee-buyer']],
+        [['text' => 'تقسیم کارمزد', 'callback_data' => 'hooshpay_fee-split']],
+        [['text' => '🔙 تنظیمات هوش‌پی', 'callback_data' => 'hooshpaysetting']],
+    ]], JSON_UNESCAPED_UNICODE);
+    Editmessagetext($from_id, $message_id, "⚖️ <b>نحوهٔ پرداخت کارمزد هوش‌پی</b>\n\n• فروشنده: کاربر مبلغ پایه را می‌پردازد و کارمزد از اعتبار دریافتی کسب‌وکار کم می‌شود.\n• خریدار: مبلغ قابل پرداخت کاربر شامل کارمزد است؛ کیف پول فقط مبلغ پایه را شارژ می‌کند.\n• تقسیم: کارمزد مطابق محاسبهٔ هوش‌پی تقسیم می‌شود.", $kb, 'HTML');
+} elseif (preg_match('/^hooshpay_fee-(seller|buyer|split)$/', (string)$datain, $hpFeeMatch) && $adminrulecheck['rule'] == 'administrator') {
+    update('PaySetting', 'ValuePay', $hpFeeMatch[1], 'NamePay', 'hooshpay_fee_mode');
+    nm_adminInstantReply($from_id, '✅ نحوهٔ کارمزد هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_min' && $adminrulecheck['rule'] == 'administrator') {
+    nm_adminInstantReply($from_id, '⬇️ حداقل مبلغ هوش‌پی را به تومان وارد کنید (حداقل مجاز هوش‌پی: ۱۰۰۰).', $backadmin, 'HTML'); step('minbalancehooshpay', $from_id);
+} elseif ($user['step'] == 'minbalancehooshpay') {
+    if (!ctype_digit($text) || (int)$text < 1000) { nm_adminInstantReply($from_id, '❌ یک عدد صحیح حداقل ۱۰۰۰ وارد کنید.', $backadmin, 'HTML'); return; }
+    update('PaySetting', 'ValuePay', (string)(int)$text, 'NamePay', 'minbalancehooshpay');
+    nm_adminInstantReply($from_id, '✅ حداقل مبلغ هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_max' && $adminrulecheck['rule'] == 'administrator') {
+    nm_adminInstantReply($from_id, '⬆️ حداکثر مبلغ هوش‌پی را به تومان وارد کنید.', $backadmin, 'HTML'); step('maxbalancehooshpay', $from_id);
+} elseif ($user['step'] == 'maxbalancehooshpay') {
+    if (!ctype_digit($text) || (int)$text < 1000) { nm_adminInstantReply($from_id, '❌ یک عدد صحیح حداقل ۱۰۰۰ وارد کنید.', $backadmin, 'HTML'); return; }
+    update('PaySetting', 'ValuePay', (string)(int)$text, 'NamePay', 'maxbalancehooshpay');
+    nm_adminInstantReply($from_id, '✅ حداکثر مبلغ هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_cashback' && $adminrulecheck['rule'] == 'administrator') {
+    nm_adminInstantReply($from_id, '🎁 درصد کش‌بک پرداخت هوش‌پی را وارد کنید (۰ تا ۱۰۰).', $backadmin, 'HTML'); step('chashbackhooshpay', $from_id);
+} elseif ($user['step'] == 'chashbackhooshpay') {
+    if (!ctype_digit($text) || (int)$text > 100) { nm_adminInstantReply($from_id, '❌ یک عدد صحیح بین ۰ تا ۱۰۰ وارد کنید.', $backadmin, 'HTML'); return; }
+    update('PaySetting', 'ValuePay', (string)(int)$text, 'NamePay', 'chashbackhooshpay');
+    nm_adminInstantReply($from_id, '✅ درصد کش‌بک هوش‌پی ذخیره شد.', $backadmin, 'HTML'); step('home', $from_id);
+} elseif ($datain == 'hooshpay_test' && $adminrulecheck['rule'] == 'administrator') {
+    try {
+        $account = function_exists('hooshpayAccount') ? hooshpayAccount() : ['success' => false];
+        $balance = function_exists('hooshpayBalance') ? hooshpayBalance() : ['success' => false];
+        $accountData = function_exists('hooshpayInvoiceData') ? hooshpayInvoiceData($account) : [];
+        $balanceData = function_exists('hooshpayInvoiceData') ? hooshpayInvoiceData($balance) : [];
+        if (empty($account['success']) && empty($balance['success'])) {
+            throw new RuntimeException('no successful API response');
+        }
+        $accountName = htmlspecialchars(trim((string)($accountData['name'] ?? $accountData['email'] ?? $accountData['username'] ?? 'متصل')), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $balanceValue = htmlspecialchars((string)($balanceData['balance'] ?? $balanceData['available_balance'] ?? '—'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        nm_adminInstantReply($from_id, "✅ اتصال به هوش‌پی برقرار است.\n\nحساب: <b>{$accountName}</b>\nموجودی: <b>{$balanceValue}</b>\n\nاین تست هیچ فاکتوری ایجاد نمی‌کند.", $backadmin, 'HTML');
+    } catch (Throwable $e) {
+        FaoximaLogger::userFacing('HooshPay admin connection test failed', ['error' => $e->getMessage()]);
+        nm_adminInstantReply($from_id, '❌ اتصال به هوش‌پی برقرار نشد. API Key، دسترسی سرور و تنظیمات را بررسی کنید.', $backadmin, 'HTML');
+    }
+    step('home', $from_id);
+} elseif ($datain == 'hooshpay_back' && $adminrulecheck['rule'] == 'administrator') {
+    $Bot_Status = buildPaymentGatewayKeyboard($textbotlang);
+    Editmessagetext($from_id, $message_id, "📌 از لیست زیر میتوانید درگاه‌ها را مدیریت کنید.", $Bot_Status, 'HTML');
+    step('finance', $from_id);
 } elseif ($text == "🔑 ثبت API Key اطلس‌پی" && $adminrulecheck['rule'] == "administrator") {
     $PaySetting = select("PaySetting", "ValuePay", "NamePay", "apiatlaspay", "select");
     $currentKey = $PaySetting['ValuePay'] ?? 'ثبت نشده';

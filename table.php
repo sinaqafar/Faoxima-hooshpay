@@ -2157,6 +2157,11 @@ try {
         ['apihooshpay', ''],
         ['secrethooshpay', ''],
         ['hooshpay_callback_url', ''],
+        ['hooshpay_return_url', ''],
+        ['hooshpay_fee_mode', 'seller'],
+        ['chashbackhooshpay', '0'],
+        ['chashbackhooshpay_target', 'all'],
+        ['chashbackhooshpay_scope', 'all'],
         ['minbalancehooshpay', 1000],
         ['maxbalancehooshpay', 10000000],
         ['helphooshpay', '2'],
@@ -3276,8 +3281,17 @@ try {
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_token",         "VARCHAR(64) NULL");
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_tracking_code", "VARCHAR(64) NULL");
     rxSafeAddColumn($connect, "Payment_report", "tetrapay_payment_link",  "VARCHAR(500) NULL");
-    rxSafeAddColumn($connect, "Payment_report", "hooshpay_uid",           "VARCHAR(100) NULL");
-    rxSafeAddColumn($connect, "Payment_report", "hooshpay_payment_url",   "VARCHAR(500) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_uid",              "VARCHAR(100) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_payment_url",      "VARCHAR(500) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_amount",           "BIGINT NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_payable_amount",   "BIGINT NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_merchant_credit",  "BIGINT NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_fee_amount",       "BIGINT NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_fee_mode",         "VARCHAR(16) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_tracking_code",    "VARCHAR(100) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_status",           "VARCHAR(32) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_expires_at",       "VARCHAR(64) NULL");
+    rxSafeAddColumn($connect, "Payment_report", "hooshpay_verified_at",      "VARCHAR(64) NULL");
 
     try {
         $haveBlupalIdx = $connect->query("SHOW INDEX FROM Payment_report WHERE Key_name = 'idx_pr_blupal_invoice'");
@@ -3297,6 +3311,13 @@ try {
         $haveTetraIdx = $connect->query("SHOW INDEX FROM Payment_report WHERE Key_name = 'idx_pr_tetrapay_token'");
         if ($haveTetraIdx && $haveTetraIdx->num_rows === 0) {
             @$connect->query("ALTER TABLE Payment_report ADD INDEX idx_pr_tetrapay_token (tetrapay_token)");
+        }
+    } catch (Throwable $e) {  }
+
+    try {
+        $haveHooshPayIdx = $connect->query("SHOW INDEX FROM Payment_report WHERE Key_name = 'idx_pr_hooshpay_uid'");
+        if ($haveHooshPayIdx && $haveHooshPayIdx->num_rows === 0) {
+            @$connect->query("ALTER TABLE Payment_report ADD INDEX idx_pr_hooshpay_uid (hooshpay_uid)");
         }
     } catch (Throwable $e) {  }
 

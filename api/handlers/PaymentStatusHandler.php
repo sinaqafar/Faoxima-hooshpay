@@ -71,6 +71,13 @@ final class PaymentStatusHandler extends BaseHandler
             FaoximaResponse::notFound('Payment not found');
         }
 
+        // HooshPay can return a user to the Mini App before its webhook arrives.
+        // Reconcile only this user's still-pending invoice, and fulfill only after
+        // the gateway's final verify endpoint confirms the exact stored invoice.
+        if (strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay') {
+            $report = $this->reconcileHooshPay($report);
+        }
+
         $paymentStatus = (string)($report['payment_Status'] ?? 'Unpaid');
         $reasonRaw = trim((string)($report['dec_not_confirmed'] ?? ''));
         $reasonFa  = $this->resolveReason($paymentStatus, $reasonRaw);
@@ -107,6 +114,9 @@ final class PaymentStatusHandler extends BaseHandler
             $expiresAt = $hashAt + 1800;
         } elseif ($isCrypto) {
             $expiresAt = 0;
+        } elseif (strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay'
+            && trim((string)($report['hooshpay_expires_at'] ?? '')) !== '') {
+            $expiresAt = $this->parseTimestamp((string)$report['hooshpay_expires_at']);
         } else {
             $ttlSec = $this->resolveTtl($report);
             $expiresAt = $createdAt > 0 ? ($createdAt + $ttlSec) : 0;
@@ -135,7 +145,20 @@ final class PaymentStatusHandler extends BaseHandler
             'service'          => $service,
             'reason'           => $reasonFa,
             'method'           => (string)($report['Payment_Method'] ?? ''),
+            // amount is always the wallet/service credit; HooshPay's fee is never credited.
             'amount'           => (int)($report['price'] ?? 0),
+            'payable_amount'   => strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay'
+                ? (int)($report['hooshpay_payable_amount'] ?? $report['price'] ?? 0)
+                : null,
+            'fee_amount'       => strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay'
+                ? (int)($report['hooshpay_fee_amount'] ?? 0)
+                : null,
+            'fee_mode'         => strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay'
+                ? (trim((string)($report['hooshpay_fee_mode'] ?? '')) ?: null)
+                : null,
+            'tracking_code'    => strtolower((string)($report['Payment_Method'] ?? '')) === 'hooshpay'
+                ? (trim((string)($report['hooshpay_tracking_code'] ?? '')) ?: null)
+                : null,
             'created_at'       => $createdAt,
             'expires_at'       => $expiresAt,
             'hash_at'          => $hashAt > 0 ? $hashAt : null,
@@ -144,10 +167,108 @@ final class PaymentStatusHandler extends BaseHandler
             'currency_code'    => trim((string)($report['crypto_currency'] ?? '')) ?: null,
             'crypto_amount'    => trim((string)($report['crypto_amount']   ?? '')) ?: null,
             'wallet_to'        => trim((string)($report['crypto_wallet_to'] ?? '')) ?: null,
-            'gateway_url'      => trim((string)($report['tronado_payment_url'] ?? '')) ?: (trim((string)($report['tonpay_invoice_url'] ?? '')) ?: (trim((string)($report['cubepay_payment_link'] ?? '')) ?: (trim((string)($report['blupal_payment_link'] ?? '')) ?: (trim((string)($report['atlaspay_payment_url'] ?? '')) ?: (trim((string)($report['tetrapay_payment_link'] ?? '')) ?: null))))),
+            'gateway_url'      => trim((string)($report['hooshpay_payment_url'] ?? '')) ?: (trim((string)($report['tronado_payment_url'] ?? '')) ?: (trim((string)($report['tonpay_invoice_url'] ?? '')) ?: (trim((string)($report['cubepay_payment_link'] ?? '')) ?: (trim((string)($report['blupal_payment_link'] ?? '')) ?: (trim((string)($report['atlaspay_payment_url'] ?? '')) ?: (trim((string)($report['tetrapay_payment_link'] ?? '')) ?: null)))))),
         ];
 
         FaoximaResponse::ok($payload);
+    }
+
+
+    /**
+     * Reconcile a HooshPay invoice when the user returns from its hosted page.
+     * This is deliberately best-effort: status reads stay available when HooshPay
+     * is temporarily unreachable, while the webhook/poller will retry later.
+     */
+    private function reconcileHooshPay(array $report): array
+    {
+        $currentStatus = strtolower((string)($report['payment_Status'] ?? ''));
+        if (in_array($currentStatus, ['paid', 'reject', 'cancelled'], true)
+            || !function_exists('hooshpayGetInvoice')
+            || !function_exists('hooshpayInvoiceMatchesReport')) {
+            return $report;
+        }
+
+        $orderId = (string)($report['id_order'] ?? '');
+        $uid = trim((string)($report['hooshpay_uid'] ?? ''));
+        if ($orderId === '' || $uid === '') {
+            return $report;
+        }
+
+        try {
+            $remote = hooshpayGetInvoice($uid);
+            if (!is_array($remote) || empty($remote['success'])) {
+                return $report;
+            }
+            $match = hooshpayInvoiceMatchesReport($report, $remote);
+            if (empty($match['ok'])) {
+                FaoximaLogger::userFacing('HooshPay return status mismatch', [
+                    'order' => $orderId,
+                    'reason' => (string)($match['reason'] ?? 'unknown'),
+                ]);
+                return $report;
+            }
+
+            if (function_exists('hooshpayPersistInvoiceMetadata')) {
+                hooshpayPersistInvoiceMetadata($orderId, $remote, false);
+            }
+            $remoteStatus = function_exists('hooshpayInvoiceStatus') ? hooshpayInvoiceStatus($remote) : '';
+
+            if (function_exists('hooshpayInvoiceIsPaid') && hooshpayInvoiceIsPaid($remote)
+                && function_exists('hooshpayVerifyPaidInvoiceForReport')) {
+                $verified = hooshpayVerifyPaidInvoiceForReport($report);
+                if (!empty($verified['ok'])) {
+                    require_once dirname(__DIR__, 2) . '/lib/PaymentConfirm.php';
+                    global $ManagePanel;
+                    if ((!isset($ManagePanel) || !($ManagePanel instanceof ManagePanel)) && class_exists('ManagePanel')) {
+                        $ManagePanel = new ManagePanel();
+                    }
+                    payment_confirm_paid($orderId, 'chashbackhooshpay', [
+                        'method'      => 'hooshpay',
+                        'extra_lines' => ['🔁 تأیید بازگشت از هوش‌پی و verify نهایی'],
+                    ]);
+                }
+            } elseif (in_array($remoteStatus, ['expired', 'cancelled', 'canceled'], true)) {
+                FaoximaDb::execute(
+                    "UPDATE Payment_report
+                        SET payment_Status = :status, hooshpay_status = :remote
+                      WHERE id_order = :order AND id_user = :user AND source = 'miniapp'
+                        AND payment_Status NOT IN ('paid', 'cancelled')",
+                    [
+                        ':status' => in_array($remoteStatus, ['cancelled', 'canceled'], true) ? 'cancelled' : 'expire',
+                        ':remote' => $remoteStatus,
+                        ':order'  => $orderId,
+                        ':user'   => (string)$this->user['id'],
+                    ]
+                );
+            } elseif ($remoteStatus === 'failed') {
+                FaoximaDb::execute(
+                    "UPDATE Payment_report
+                        SET payment_Status = 'reject', hooshpay_status = 'failed', dec_not_confirmed = :reason
+                      WHERE id_order = :order AND id_user = :user AND source = 'miniapp'
+                        AND payment_Status NOT IN ('paid', 'cancelled')",
+                    [
+                        ':reason' => 'پرداخت از سمت هوش‌پی ناموفق بود',
+                        ':order'  => $orderId,
+                        ':user'   => (string)$this->user['id'],
+                    ]
+                );
+            }
+        } catch (Throwable $e) {
+            FaoximaLogger::userFacing('HooshPay return reconciliation failed', [
+                'order' => $orderId,
+                'err'   => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            $fresh = FaoximaDb::fetchOne(
+                "SELECT * FROM Payment_report WHERE id_order = :order AND id_user = :user AND source = 'miniapp' LIMIT 1",
+                [':order' => $orderId, ':user' => (string)$this->user['id']]
+            );
+            return is_array($fresh) ? $fresh : $report;
+        } catch (Throwable $e) {
+            return $report;
+        }
     }
 
 

@@ -377,6 +377,7 @@ if (!function_exists('getCronJobDefinitions')) {
             'payment_expire' => ['script' => 'payment_expire.php', 'admin_label' => 'انقضای پرداخت', 'instruction' => '⏳ بررسی انقضای پرداخت‌ها — %s', 'default' => ['unit' => 'minute', 'value' => 5]],
             'sendmessage' => ['script' => 'sendmessage.php', 'admin_label' => 'ارسال پیام', 'instruction' => '📨 ارسال پیام زمان‌بندی‌شده — %s', 'default' => ['unit' => 'minute', 'value' => 1]],
             'plisio' => ['script' => 'plisio.php', 'admin_label' => 'Plisio', 'instruction' => '💰 بررسی پرداخت Plisio — %s', 'default' => ['unit' => 'minute', 'value' => 3]],
+            'hooshpaycheck' => ['script' => 'hooshpaycheck.php', 'admin_label' => 'هوش‌پی', 'instruction' => '🧠 بررسی پرداخت هوش‌پی — %s', 'default' => ['unit' => 'minute', 'value' => 1]],
             'activeconfig' => ['script' => 'activeconfig.php', 'admin_label' => 'فعال کانفیگ', 'instruction' => '✅ فعال‌سازی تنظیمات — %s', 'default' => ['unit' => 'minute', 'value' => 1]],
             'disableconfig' => ['script' => 'disableconfig.php', 'admin_label' => 'غیرفعال‌کانفیگ', 'instruction' => '⛔ غیرفعال‌سازی تنظیمات — %s', 'default' => ['unit' => 'minute', 'value' => 1]],
             'iranpay1' => ['script' => 'iranpay1.php', 'admin_label' => 'ایران‌پی', 'instruction' => '🇮🇷 بررسی پرداخت ایران‌پی — %s', 'default' => ['unit' => 'minute', 'value' => 1]],
